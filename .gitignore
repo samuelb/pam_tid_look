@@ -1,3 +1,4 @@
 pam_tidcmd.so
+pam_tidcmd_probe
 tidcmd_test
 dialog_check

@@ -247,22 +247,66 @@ its own executable name.
 
 ## Installation
 
-### Location
+### What can lock you out of sudo
 
-The module is installed to `/Library/Security/pam_tidcmd/pam_tidcmd.so`, owned
-by root, mode 444, and referenced by absolute path in the PAM config.
+`/etc/pam.d/sudo` includes `sudo_local`. OpenPAM loads every module a policy
+names when sudo calls `pam_start()`, following includes, and if one cannot be
+loaded, `pam_start()` fails. sudo then stops with "sudo: unable to initialize
+PAM: system error", for every user, root included. A missing module file was
+seen to do this (see Verification); a slice or signature that dyld rejects, or
+a symbol that a macOS update removed, would fail the same way. A module that
+crashes or hangs in `pam_sm_authenticate` stops sudo for everyone who has to
+authenticate.
+
+So the installer changes nothing it cannot check first, checks the result
+through sudo itself, and undoes the change when a check fails. For a module
+that breaks later, there is a way back that does not use sudo (Break glass).
+
+### Files
+
+The installer puts three files in `/Library/Security/pam_tidcmd`, owned by
+root:
+
+| File | Mode | Purpose |
+| --- | --- | --- |
+| `pam_tidcmd.so` | 444 | the module, named by absolute path in `sudo_local` |
+| `pam_tidcmd_probe` | 555 | the load check (see Checks) |
+| `pam_tidcmd` | 555 | a copy of the script, so that `uninstall` and `rescue` work without Homebrew or the build directory |
 
 `/usr/local/lib/pam` is the usual place for third-party modules, but on this
 machine `/usr/local/lib` is owned by the user. Any process running as that user
 could then swap the module for one that approves everything. The installer
 refuses to continue unless `/Library` and `/Library/Security` are root-owned,
-not group or world writable, and without ACL entries that allow anything.
+not group or world writable, and without ACL entries that allow anything. These
+checks stop the installer if they cannot be carried out, rather than passing.
 
-The module is not copied with `install(1)`, because that copies ACLs: an ACL on
-the user-owned build that lets the user write would end up on the root-owned,
-mode 444 module. The installer writes it into a file that `mktemp` created as
-root inside the module's directory, removes any ACL, sets owner and mode, and
-renames it into place.
+The files are not copied with `install(1)`, because that copies ACLs: an ACL on
+the user-owned build that lets the user write would end up on the root-owned
+module. The installer copies the contents into a directory that `mktemp -d`
+created as root inside the module's directory, removes any ACL, sets owner and
+mode, and renames each file into place.
+
+### Homebrew
+
+The formula (`Formula/pam_tidcmd.rb`) builds the module and the probe, puts
+them and the script in Homebrew's `libexec/pam_tidcmd`, and links
+`bin/pam_tidcmd` to the script. The script finds the files next to its own
+resolved path, so the same script works from the build directory, from
+Homebrew and from `/Library/Security/pam_tidcmd`.
+
+The formula does not touch sudo. Homebrew does not run as root, and PAM must
+never load a module from Homebrew's prefix:
+
+- The prefix belongs to the user, which is the problem described under Files.
+- `brew upgrade`, `brew cleanup` and `brew uninstall` delete files from it. If
+  `sudo_local` named one of them, the next of these commands would stop sudo
+  from starting.
+
+So `sudo pam_tidcmd install` copies the files to `/Library/Security/pam_tidcmd`,
+as from the build directory. After `brew upgrade`, sudo keeps the copy it has
+until install is run again; `pam_tidcmd status` says when the two differ.
+`brew uninstall` leaves sudo as it is, and the installed copy of the script can
+still uninstall.
 
 ### Config changes
 
@@ -278,9 +322,10 @@ after it.
 `--timeout SECONDS` puts `timeout=SECONDS` on the new line, checked by the same
 rule as the module's. Without it, a reinstall keeps the `timeout=` value of the
 current line, and stops if that value is invalid; a first install writes no
-option, so the module's default applies. Uninstalling removes the new line and strips that prefix, which
-restores the file exactly. Leaving both modules active was rejected because
-cancelling the first dialog would raise a second one.
+option, so the module's default applies. Uninstalling removes the new line and
+strips that prefix, which restores the file exactly. Leaving both modules
+active was rejected because cancelling the first dialog would raise a second
+one.
 
 Lines are recognised by their module field only. A module name that appears in
 a comment or an option does not make a line count as either module. With more
@@ -290,27 +335,188 @@ because one replacement line cannot keep the meaning of several.
 The new config is written to a temporary file and renamed into place only if
 it was produced without error, so a failure cannot leave a partial file.
 
-Only one install or uninstall runs at a time (a lock directory in `/var/run`
-holding the pid). A second run would otherwise replace the first one's backup
-while the first waits for confirmation. A lock left by a killed run is not
-taken over automatically, since two runs could both judge it stale; the
-installer prints the command that removes it.
+Only one install or uninstall runs at a time, so that a run keeps its backups
+until it is done. The lock is a `flock` on `/var/run/pam_tidcmd.lock`, taken
+with `lockf(1)` on a descriptor the script holds. The kernel releases it when
+the process ends, so a killed run cannot leave a stale lock to be removed by
+hand. The Touch ID check is started without the descriptor, so that it cannot
+hold the lock after the script ends.
 
-The ownership, permission and ACL checks on `/Library` and `/Library/Security`
-stop the installer if they cannot be carried out, rather than passing.
+### Checks
 
-### Confirm or roll back
+Two checks are used before and after a change:
 
-After writing the config, the installer asks you to run `sudo -k true` in a new
-terminal and confirm that it worked. Without a `y` within five minutes, or on
-any error, the previous config and the previous module are restored. Both are
-saved before either is changed; the old module is kept as a hard link, so a
-reinstall over a working module can be undone even though the new build already
-took its place.
+- **The probe** (`pam_tidcmd_probe`) loads a module with `dlopen()`, as OpenPAM
+  does, or calls `pam_start()` for a policy, which loads every module the policy
+  names. It authenticates nobody and shows nothing. OpenPAM on macOS takes only
+  service names: a name containing `/` is refused. So a policy to check is
+  written to a temporary file in `/etc/pam.d`. A service without a policy file
+  falls back to `other` and loads, so the probe insists that the file exists.
+  The probe is built for the module's architectures; on Apple silicon it runs as
+  arm64e and loads the module's arm64e slice, as sudo does.
+- **`sudo -n /usr/bin/true` run as root.** Root needs no password, but sudo
+  initialises PAM first ("Init authentication system regardless of whether we
+  need a password", `check_user()` in sudoers' `check.c`), so this loads the
+  whole config in the real sudo and fails with "unable to initialize PAM" when
+  a module cannot be loaded. It also catches anything else that keeps sudo
+  from running a command.
 
-This guards against being locked out of sudo if the module fails to load. The
-installer is already running as root, so it can undo the change even when sudo
-itself is broken.
+### Install
+
+Before changing anything, install requires that:
+
+1. `sudo -n /usr/bin/true` as root succeeds now. Otherwise a check after the
+   change would prove nothing.
+2. The new module, copied next to its final place under a temporary name,
+   loads in the probe and exports `pam_sm_authenticate`.
+3. PAM can load the new `sudo_local`, written with the module at that
+   temporary path.
+
+Then it keeps the current `sudo_local` and the current files (as hard links, so
+a reinstall over a working module can be undone after the new one has taken its
+place), moves the new files into place and writes `sudo_local`. Afterwards it
+requires that:
+
+4. The probe can load `/etc/pam.d/sudo`, which now includes the new
+   `sudo_local`.
+5. `sudo -n /usr/bin/true` as root succeeds.
+6. The user who ran the installer approves a Touch ID dialog for
+   `sudo -S -k /usr/bin/true`, run as that user through the new config. `-k`
+   makes sudo authenticate despite cached credentials, and leaves them as they
+   are. `-S` with no input makes the password fallback fail at once, so only an
+   approved dialog passes. After two minutes without an answer, the check kills
+   that sudo, which closes its dialog.
+
+The sixth check replaces asking you to run `sudo -k true` in a second terminal
+and type `y` within five minutes. It tests the same path, authentication
+through the module, without relying on the answer. It needs `SUDO_USER`, so
+install refuses to run from a root login shell. It also needs the GUI session,
+so an install over ssh is always undone.
+
+If check 4, 5 or 6 fails, the script stops on an error, or the run is
+interrupted, the EXIT trap puts back the saved `sudo_local`, then the previous
+files, and checks again that sudo starts. `sudo_local` goes first, so a failed
+first install never leaves it naming a module that is already deleted. If
+`sudo_local` cannot be put back, nothing else is touched: the module it names
+stays, and so does the saved copy, whose path is printed.
+
+Every signal that ends the script by default and can be caught (HUP, INT,
+QUIT, TERM, USR1, USR2, ALRM) leads to that trap. The handler first ignores
+all of them, as does the undo, so a second signal cannot end the script before
+or during the undo. Closing the terminal, for one, can deliver more than one
+signal: the terminal signals every process in it, and sudo relays signals to
+the command it runs. Without this, a second signal arriving 30 µs after the
+first ended a test run before its undo began, most of the time. Writes to a closed terminal or pipe cannot stop
+the undo either: SIGPIPE is ignored there too. Only SIGKILL or a power loss
+skips the trap. The new config is then in place, unconfirmed; if sudo does not
+start, Break glass applies.
+
+The installed copy of the script refuses to install. It can uninstall, show the
+status and rescue.
+
+### Uninstall
+
+Uninstall takes the module out of `sudo_local` in the first of these ways that
+leaves sudo starting:
+
+1. `sudo_local` without the module, which brings back the `pam_tid.so` line.
+   It is checked with the probe before it is written and with
+   `sudo -n /usr/bin/true` after.
+2. If that does not start sudo but sudo started with the module, nothing is
+   changed and uninstall fails: removing the module would make things worse.
+3. If sudo did not start before either, because the module stopped loading or
+   another line in `sudo_local` did: no `sudo_local` at all. That is how macOS
+   comes, with the password and no Touch ID. A missing `sudo_local` is not an
+   error, since `/etc/pam.d/sudo` includes it on every Mac and only the
+   template exists until someone creates it. The rest of the file, without the
+   module, is kept as `sudo_local.pam_tidcmd-disabled.<date-time>` to be fixed
+   and moved back.
+4. If sudo does not start without `sudo_local` either, the cause is elsewhere
+   (`/etc/pam.d/sudo`, sudoers). `sudo_local` is written back without the
+   module, unless PAM could not load that either: then it stays aside, so that
+   sudo starts once the other cause is fixed. Uninstall reports the failure.
+
+An interrupted uninstall puts the old `sudo_local` back only if sudo started
+with it. When sudo did not start to begin with, whatever the run has written
+is at least as good, so it stays.
+
+The files are deleted only after `sudo_local` no longer names the module, and
+not while another file in `/etc/pam.d` names it, since PAM could then no longer
+load that file. `uninstall` needs no files from the build or from Homebrew, so
+the installed copy can run it.
+
+### macOS protects `/etc/pam.d`
+
+Root alone may not change `/etc/pam.d`. The platform sandbox policy puts it
+under the privacy class `kTCCServiceSystemPolicySysAdminFiles` ("administer
+your computer"), together with files such as `/etc/sudo.conf` and
+`/etc/master.passwd` ([list as of macOS 15.1](https://bdash.net.nz/posts/tcc-and-the-platform-sandbox-policy/)).
+A write there is allowed only when the process's responsible app holds that
+permission, or Full Disk Access, which tccd checks first. Run through sudo in
+a terminal, the responsible app is the terminal app: macOS asked once whether
+T3 Code may administer the computer (00:10:59 in the log, allowed), and the
+install's writes went through.
+
+So install and uninstall first try to create a file in `/etc/pam.d`
+(`check_pam_dir`) and stop, before changing anything, with an explanation if
+that is refused. Otherwise the refusal would come from whichever write came
+first.
+
+### Break glass
+
+When the module keeps sudo from starting, getting it out needs root without
+sudo. `pam_tidcmd rescue`, run without sudo, gets root from Authorization
+Services instead: it runs `do shell script … with administrator privileges`
+through `osascript`, which asks for an administrator's password in a dialog.
+StandardAdditions does that with the right `system.privilege.admin` and
+authtrampoline; it does not call sudo, and authd does not use
+`/etc/pam.d/sudo`, so a broken `sudo_local` does not affect it.
+
+A process started that way cannot change `/etc/pam.d`, though. Its responsible
+process is `/System/Library/Frameworks/Security.framework/authtrampoline`
+itself, running as root in a background session, which holds neither
+permission and cannot be asked. The first version of rescue ran `uninstall`
+there, and the first write was refused (see Verification).
+
+So rescue leaves `/etc/pam.d` alone and changes the file `sudo_local` names
+instead. As root, it replaces `/Library/Security/pam_tidcmd/pam_tidcmd.so` with
+Apple's `/usr/lib/pam/pam_tid.so.2`:
+
+1. first with a symbolic link to it, which stays current through macOS updates;
+2. if sudo does not start with that, with a copy. The copy is written to a new
+   file and renamed into place, since macOS caches the code signature of a file
+   and overwriting a module in place can make it unloadable.
+
+Each is kept only if `sudo -n /usr/bin/true` as root then succeeds. If neither
+helps, the module was not the cause, and it is put back as it was. The module
+that stopped working is kept as `.pam_tidcmd.so.broken` for a later look.
+
+The line in `sudo_local` keeps its control flag, which came from the
+`pam_tid.so` line it replaced, so sudo then behaves as before the install:
+Apple's Touch ID, without the command. Apple's module imports no option
+parsing, so a `timeout=` on the line does no harm. Afterwards, with sudo
+working again, `sudo pam_tidcmd uninstall` takes the line out and removes the
+files, or `sudo pam_tidcmd install` puts a working build in. Both handle the
+link: install keeps it as a backup with `cp -P`, because `ln` would follow it
+to the system volume and fail.
+
+`/Library/Security` is not in the `SysAdminFiles` list as of macOS 15.1, and
+on macOS 27.2.1 the rescue could write there from the dialog (see
+Verification).
+
+Afterwards, the user's side of rescue checks whether PAM can load sudo's
+config, whatever the root side reported.
+
+The dialog needs a GUI session. Without one, as over ssh, the README lists
+`dsenableroot` and `su` (**Unverified**), where `rescue` then runs as root
+directly, and macOS Recovery, where the Data volume's
+`/private/etc/pam.d/sudo_local` can be moved aside.
+
+Rejected for now: a LaunchDaemon that runs the checks at boot and replaces the
+module when sudo does not start. It would repair the likeliest breakage, a
+macOS update, without anyone acting. But it is a root process that runs at
+every boot, a background item macOS reports to the user, and one more thing to
+install and remove correctly.
 
 ## Testing
 
@@ -352,6 +558,34 @@ after the timeout and that the process that asked then ends by itself:
 
 Approving and cancelling need a person and were tested by hand (see
 Verification).
+
+`make test` also runs the probe on the built module, and `install_test.sh`,
+which needs no root and shows no dialog. It sources the script and runs install
+and uninstall against a scratch directory, with fakes for the paths, the root
+and ownership steps, the probe, sudo and the Touch ID check. The fake probe
+follows includes and fails on a module that is missing or contains the word
+`BROKEN`; the fake sudo starts when the fake probe can load sudo's policy, as
+the real one does. It covers each rollback and each uninstall fallback above, a
+reinstall that fails and keeps the previous module, an install interrupted
+during the Touch ID check, and the lock. Breaking the rollback, a fallback or
+the check before uninstalling makes it fail.
+
+`install_test.sh` also runs the real Touch ID check with a fake command in
+place of sudo: approved, cancelled, ended by a signal, and unanswered, where it
+must give up after the wait and kill every process the check started. And it
+runs `rescue` with a fake `osascript`, and as root: the link, the copy when
+the fake probe refuses links, nothing to do, a module that is not the cause, a
+missing module, and install and uninstall afterwards. A read-only `/etc/pam.d`
+stands in for the privacy protection. Before any test, the harness checks that
+the stubs replace every system path the script defines, and it refuses to run
+as root. The scripts under test run from a file,
+not through `bash -c`: bash 3.2 handles some signals differently there.
+Interrupted runs are started in a process group of their own, because a
+background job of a non-interactive shell starts with SIGINT and SIGQUIT
+ignored, and those cannot be trapped. Each signal handler is tested this way,
+as are two signals at once.
+
+`make lint` runs shellcheck on the scripts.
 
 ## Verification
 
@@ -403,6 +637,57 @@ installed.
   dialog ("Caller dismissed" in its log). This comes from sudo, so it applies to
   Apple's `pam_tid.so` as well.
 
+### Installation
+
+Checked on 2026-11-13, without root.
+
+- **A module that cannot be loaded stops `pam_start()`.**
+  `/etc/pam.d/sudo_local.bak-20261113-193757`, left by an earlier experiment,
+  names a module that no longer exists. `pam_tidcmd_probe policy` fails on it
+  with "system error", and succeeds on the live `sudo_local` and on
+  `/etc/pam.d/sudo`, which loads the installed module through the include.
+  Policies given by path, in `/etc/pam.d` or elsewhere, were refused.
+- **The probe loads the slice sudo loads.** Built for arm64e, arm64 and x86_64,
+  it runs as arm64e on Apple silicon, and the module it loads reports CPU
+  subtype `0x80000002` (arm64e).
+- **Homebrew.** Homebrew 7.0.13 built and installed the formula from a local
+  tap with a tarball of the working tree: a universal module, `brew test`,
+  `brew audit --strict` and `brew style` passed. `brew uninstall` left
+  `sudo_local` and `/Library/Security/pam_tidcmd` as they were.
+- **The rescue's AppleScript** passes the script's path, quoted, and returns
+  its output and errors, checked without administrator privileges on `status`.
+- **Install as root works,** after macOS asked whether T3 Code may administer
+  the computer (2026-11-14).
+- **The first rescue failed.** With the module replaced by a file that cannot
+  be loaded, `rescue` got root from the dialog and ran `uninstall`, whose first
+  write was refused:
+
+  ```
+  sandboxd rejected approval request from mktemp for kTCCServiceSystemPolicySysAdminFiles (/private/etc/pam.d/.sudo_local.saved.ziyAM7): denied
+  ```
+
+  tccd named `com.apple.authtrampoline` (auid 0, background session) as the
+  responsible process, found no grant and could not ask. Nothing was changed.
+  This led to the module swap described under Break glass.
+- **Apple's module loads from elsewhere.** The probe loads both a copy of
+  `/usr/lib/pam/pam_tid.so.2` and a symbolic link to it. The copy keeps
+  Apple's signature ("macOS Software Signing", platform identifier 27).
+- **The rescue works** (2026-11-14). With the installed module missing, run
+  as the user, it got root from the administrator dialog, found that
+  `sudo -n /usr/bin/true` as root failed, replaced the module with a symbolic
+  link to `/usr/lib/pam/pam_tid.so.2`, and found that sudo then started. So a
+  process started from the dialog may write `/Library/Security`, PAM accepts a
+  module path that is a link, and the real sudo's check fails while the
+  module cannot be loaded and passes once it can. `sudo_local` was not
+  touched. `status` then reported the replaced module. With the module
+  replaced by a seven-byte text file instead, the rescue did the same and
+  kept that file as `.pam_tidcmd.so.broken`.
+- **Uninstall after a rescue** put back the original `pam_tid.so` line and
+  removed the files, link included (2026-11-14).
+- **The install's Touch ID check.** Cancelling the dialog failed the check
+  (sudo said "no password was provided"), the install was undone, `sudo_local`
+  was as before and `status` reported no module. Approving it kept the module.
+
 ## Known limits
 
 - **Credential caching.** sudo caches a successful authentication for five
@@ -419,3 +704,10 @@ installed.
   macOS update, in which case sudo falls back to the password prompt. So may
   `AuthorizationDismiss()`, in which case the dialog has no timeout.
 - **Scope.** The module is for sudo only.
+- **Break glass needs a GUI session** for `rescue`. Over ssh, it takes
+  `dsenableroot` and `su`, or macOS Recovery.
+- **Homebrew upgrades do not reach sudo.** sudo keeps the installed copy until
+  `sudo pam_tidcmd install` is run again.
+- **Install and uninstall need permission to administer the computer** for the
+  terminal app they run in, which macOS asks for the first time. `rescue` does
+  without it, by not changing `/etc/pam.d`.
