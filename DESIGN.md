@@ -56,8 +56,17 @@ compiled `pam_tid.so.2` on this system:
 | Check | How | If it fails |
 | --- | --- | --- |
 | GUI session present | audit session flag `0x0010` (has graphic access) | `PAM_AUTH_ERR` |
+| PAM user owns the session | PAM user's uid equals the audit session's `ai_auid` | `PAM_AUTH_ERR` |
 | `sudo -A` in use | PAM data item `askpass-enabled` is set | `PAM_AUTHINFO_UNAVAIL` |
 | Touch ID usable for this user | non-interactive LocalAuthentication evaluation | `PAM_AUTH_ERR` |
+
+The session owner check is not in Apple's module. The right's rule
+authenticates the owner of the audit session, so a granted right only vouches
+for that user. sudo can ask about someone else: with `targetpw` or `runaspw`
+it authenticates the target user, and a shell switched to another user with
+`su` still runs in the original user's session. Without the check, the session
+owner's finger would pass as that other user whenever that user has Touch ID
+set up on the same Mac.
 
 The Touch ID check exists so that sudo falls back to the terminal password
 prompt when the lid is closed, no fingerprint is enrolled or biometry is locked
@@ -92,6 +101,20 @@ The whole invocation is shown, sudo flags included. Parsing out "the command"
 was rejected: sudo's option grammar is easy to get wrong, and flags such as
 `-u`, `-E` and `-s` are part of what you are approving.
 
+The program name is always shown as `sudo`, not as `argv[0]`. The caller picks
+`argv[0]` freely (`exec -a echo sudo rm -rf /`) and this sudo does not act on
+it: run as `echo` or `sudoedit`, it behaves as plain `sudo`. Showing it would
+make that command read `echo rm -rf /`.
+
+sudo changes some arguments in place before PAM runs: it splits
+`--preserve-env=A,B` with `strtok_r()`, which writes a NUL over each comma, so
+the argument reads `--preserve-env=A` by then. exec stores the argument strings
+back to back, so each argument still runs up to the start of the next one. The
+module reads up to there and turns those NULs back into commas. The last
+argument has no next one to measure against and is read as it is; an option is
+only last with `-s`, `-i`, `-l` or `-v`, which approve a root shell or run
+nothing.
+
 ### Layout
 
 ```
@@ -118,6 +141,11 @@ is normalised before display:
   symbols are shown as-is. Everything else is written as `\u{XXXX}`. That covers
   newlines, escape sequences, bidi overrides, zero-width characters and unusual
   spaces, so an argument cannot start a fake line or reorder the text.
+- Characters that draw nothing are written as `\u{XXXX}` too, even where Unicode
+  classes them as letters, marks or symbols: every default-ignorable code point
+  (variation selectors, the combining grapheme joiner, Hangul fillers) and
+  U+2800 BRAILLE PATTERN BLANK. Otherwise `/etc/hosts` followed by a variation
+  selector would look like `/etc/hosts`.
 - Bytes that are not valid UTF-8 are written as `\xNN`.
 - Arguments containing anything outside `A-Za-z0-9_@%+=:,./-` are wrapped in
   single quotes, so argument boundaries stay visible. The quoting is for
@@ -126,7 +154,18 @@ is normalised before display:
 - Command lines over 400 characters keep the first 280 and last 80, with
   `…[N CHARACTERS NOT SHOWN]…` between them. Cutting the middle keeps both the
   program name and the end of the command visible, and the marker makes the
-  omission obvious.
+  omission obvious. The cuts are at those fixed positions (UTF-16 units),
+  moved by one only to keep a surrogate pair whole. Widening them to whole
+  composed characters was rejected: one letter followed by thousands of
+  combining marks is a single composed character and would take the whole
+  line.
+- Arguments are separated by U+200E LEFT-TO-RIGHT MARK as well as a space.
+  Without it, the quotes and space between two right-to-left arguments take
+  their direction, and AppKit draws `cp 'א' 'ב'` as `cp 'ב' 'א'`.
+- The Directory and Requested by lines are cut the same way above 200
+  characters: the directory keeps its first 80 and last 100, the process list
+  its first 120 and last 60. A deep directory with escaped names would
+  otherwise make the dialog taller than the screen.
 
 ### Directory and requesting processes
 
@@ -158,8 +197,14 @@ by root, mode 444, and referenced by absolute path in the PAM config.
 `/usr/local/lib/pam` is the usual place for third-party modules, but on this
 machine `/usr/local/lib` is owned by the user. Any process running as that user
 could then swap the module for one that approves everything. The installer
-refuses to continue unless `/Library` and `/Library/Security` are root-owned and
-not group or world writable.
+refuses to continue unless `/Library` and `/Library/Security` are root-owned,
+not group or world writable, and without ACL entries that allow anything.
+
+The module is not copied with `install(1)`, because that copies ACLs: an ACL on
+the user-owned build that lets the user write would end up on the root-owned,
+mode 444 module. The installer writes it into a file that `mktemp` created as
+root inside the module's directory, removes any ACL, sets owner and mode, and
+renames it into place.
 
 ### Config changes
 
@@ -167,15 +212,38 @@ Only `/etc/pam.d/sudo_local` is edited, which is the file Apple provides for
 local changes and keeps across system updates.
 
 The existing `pam_tid.so` line is commented out with the prefix `#pam_tidcmd# `
-and the new line is put in its place. Uninstalling removes the new line and
-strips that prefix, which restores the file exactly. Leaving both modules active
-was rejected because cancelling the first dialog would raise a second one.
+and the new line is put in its place, with the same control flag (`sufficient`
+when there was no `pam_tid.so` line and the new one is added at the end).
+Changing a `required` line to `sufficient` would let Touch ID skip the rules
+after it. Uninstalling removes the new line and strips that prefix, which
+restores the file exactly. Leaving both modules active was rejected because
+cancelling the first dialog would raise a second one.
+
+Lines are recognised by their module field only. A module name that appears in
+a comment or an option does not make a line count as either module. With more
+than one active `pam_tid.so` line the installer refuses to change anything,
+because one replacement line cannot keep the meaning of several.
+
+The new config is written to a temporary file and renamed into place only if
+it was produced without error, so a failure cannot leave a partial file.
+
+Only one install or uninstall runs at a time (a lock directory in `/var/run`
+holding the pid). A second run would otherwise replace the first one's backup
+while the first waits for confirmation. A lock left by a killed run is not
+taken over automatically, since two runs could both judge it stale; the
+installer prints the command that removes it.
+
+The ownership, permission and ACL checks on `/Library` and `/Library/Security`
+stop the installer if they cannot be carried out, rather than passing.
 
 ### Confirm or roll back
 
 After writing the config, the installer asks you to run `sudo -k true` in a new
 terminal and confirm that it worked. Without a `y` within five minutes, or on
-any error, the previous file is restored.
+any error, the previous config and the previous module are restored. Both are
+saved before either is changed; the old module is kept as a hard link, so a
+reinstall over a working module can be undone even though the new build already
+took its place.
 
 This guards against being locked out of sudo if the module fails to load. The
 installer is already running as root, so it can undo the change even when sudo

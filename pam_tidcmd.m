@@ -43,6 +43,11 @@ enum {
     kMaxCommandLength = 400, /* longer command lines are cut in the middle */
     kCommandHead = 280,
     kCommandTail = 80,
+    kMaxContextLength = 200, /* the same for the Directory and Requested by lines */
+    kDirectoryHead = 80,     /* the deepest directories are the telling part */
+    kDirectoryTail = 100,
+    kRequesterHead = 120,    /* the nearest processes come first */
+    kRequesterTail = 60,
     kMaxAncestors = 5,
 };
 
@@ -56,10 +61,26 @@ static os_log_t tidcmd_log(void) {
 }
 
 /*
+ * Unicode's Default_Ignorable_Code_Point set, plus U+2800 BRAILLE PATTERN
+ * BLANK. These draw nothing, although some are classed as letters (Hangul
+ * fillers), marks (variation selectors, combining grapheme joiner) or symbols.
+ */
+static BOOL draws_nothing(uint32_t c) {
+    return c == 0x00AD || c == 0x034F || c == 0x061C || c == 0x115F || c == 0x1160 ||
+        c == 0x17B4 || c == 0x17B5 || (c >= 0x180B && c <= 0x180F) ||
+        (c >= 0x200B && c <= 0x200F) || (c >= 0x202A && c <= 0x202E) ||
+        (c >= 0x2060 && c <= 0x206F) || c == 0x2800 || c == 0x3164 ||
+        (c >= 0xFE00 && c <= 0xFE0F) || c == 0xFEFF || c == 0xFFA0 ||
+        (c >= 0xFFF0 && c <= 0xFFF8) || (c >= 0x1BCA0 && c <= 0x1BCA3) ||
+        (c >= 0x1D173 && c <= 0x1D17A) || (c >= 0xE0000 && c <= 0xE0FFF);
+}
+
+/*
  * Make a string safe to show in the dialog: anything that is not a plainly
  * visible character (control characters, newlines, bidi overrides, zero-width
- * and other format characters, unusual spaces) is written as \u{XXXX} so it
- * cannot rearrange or hide the rest of the text. Sets *changed if it did so.
+ * and other format characters, invisible letters and marks, unusual spaces) is
+ * written as \u{XXXX} so it cannot rearrange or hide the rest of the text.
+ * Sets *changed if it did so.
  */
 static NSString *visible(NSString *s, BOOL *changed) {
     static NSCharacterSet *allowed;
@@ -78,7 +99,8 @@ static NSString *visible(NSString *s, BOOL *changed) {
     NSMutableString *out = [NSMutableString stringWithCapacity:s.length];
     for (NSUInteger i = 0; i < count; i++) {
         uint32_t c = OSSwapLittleToHostInt32(cp[i]);
-        BOOL ok = (c >= 0x20 && c <= 0x7e) || (c > 0x7f && [allowed longCharacterIsMember:c]);
+        BOOL ok = (c >= 0x20 && c <= 0x7e) ||
+            (c > 0x7f && !draws_nothing(c) && [allowed longCharacterIsMember:c]);
         if (ok) {
             uint32_t le = OSSwapHostToLittleInt32(c);
             NSString *piece = [[NSString alloc] initWithBytes:&le length:sizeof le encoding:NSUTF32LittleEndianStringEncoding];
@@ -104,8 +126,30 @@ static NSString *string_from_bytes(const char *bytes, BOOL *changed) {
     return out;
 }
 
+/*
+ * One argument as exec passed it to sudo. sudo shortens some arguments in
+ * place before PAM runs: it splits --preserve-env=A,B with strtok_r(), which
+ * writes a NUL over each comma. exec stores the argument strings back to back,
+ * so an argument still runs up to the start of the next one. Read up to there,
+ * with those NULs turned back into commas. The last argument has no next one
+ * to measure against and is read as it is.
+ */
+static NSString *original_arg(const char *arg, const char *next, BOOL *changed) {
+    size_t len = strlen(arg);
+    uintptr_t start = (uintptr_t)arg, end = (uintptr_t)next;
+    if (next && end > start + len + 1 && end - start <= ARG_MAX && next[-1] == '\0') {
+        NSMutableData *copy = [NSMutableData dataWithBytes:arg length:end - start];
+        char *bytes = copy.mutableBytes;
+        for (size_t i = len; i < end - start - 1; i++) {
+            if (bytes[i] == '\0') bytes[i] = ',';
+        }
+        return string_from_bytes(bytes, changed);
+    }
+    return string_from_bytes(arg, changed);
+}
+
 /* One argument as it should appear on the displayed command line. */
-static NSString *quoted_arg(const char *arg) {
+static NSString *quoted_arg(const char *arg, const char *next) {
     static NSCharacterSet *needsQuoting;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -114,7 +158,7 @@ static NSString *quoted_arg(const char *arg) {
     });
 
     BOOL changed = NO;
-    NSString *s = visible(string_from_bytes(arg, &changed), &changed);
+    NSString *s = visible(original_arg(arg, next, &changed), &changed);
     if (s.length > 0 && !changed && [s rangeOfCharacterFromSet:needsQuoting].location == NSNotFound) {
         return s;
     }
@@ -122,21 +166,48 @@ static NSString *quoted_arg(const char *arg) {
     return [NSString stringWithFormat:@"'%@'", s];
 }
 
-static NSString *command_line(int argc, char **argv) {
-    NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithCapacity:(NSUInteger)argc];
-    for (int i = 0; i < argc && argv[i]; i++) {
-        [parts addObject:quoted_arg(argv[i])];
+/* An index to cut a string at, moved back by one if it would split a surrogate pair. */
+static NSUInteger cut_index(NSString *s, NSUInteger i) {
+    if (i > 0 && i < s.length && CFStringIsSurrogateLowCharacter([s characterAtIndex:i]) &&
+        CFStringIsSurrogateHighCharacter([s characterAtIndex:i - 1])) {
+        return i - 1;
     }
-    NSString *line = [parts componentsJoinedByString:@" "];
-    if (line.length <= kMaxCommandLength) return line;
+    return i;
+}
 
-    /* Cut on composed-character boundaries so no surrogate pair is split. */
-    NSRange head = [line rangeOfComposedCharacterSequencesForRange:NSMakeRange(0, kCommandHead)];
-    NSRange tail = [line rangeOfComposedCharacterSequencesForRange:
-        NSMakeRange(line.length - kCommandTail, kCommandTail)];
-    NSUInteger omitted = tail.location - NSMaxRange(head);
+/*
+ * A line longer than max keeps its first head and last tail characters, with
+ * a marker in between. max must be more than head + tail.
+ *
+ * The cuts are at fixed positions. Widening them to whole composed character
+ * sequences would let one long sequence (a letter followed by thousands of
+ * combining marks) take the whole line. Only surrogate pairs are kept whole.
+ */
+static NSString *cut_middle(NSString *line, NSUInteger max, NSUInteger head, NSUInteger tail) {
+    if (line.length <= max) return line;
+    NSUInteger end = cut_index(line, head);
+    NSUInteger start = cut_index(line, line.length - tail);
     return [NSString stringWithFormat:@"%@ …[%lu CHARACTERS NOT SHOWN]… %@",
-        [line substringWithRange:head], (unsigned long)omitted, [line substringWithRange:tail]];
+        [line substringToIndex:end], (unsigned long)(start - end), [line substringFromIndex:start]];
+}
+
+/*
+ * argv must be laid out as exec left it: see original_arg().
+ *
+ * argv[0] is not shown: the caller of sudo chooses it freely and sudo does not
+ * act on it, so `exec -a echo sudo rm -rf /` would otherwise read "echo rm -rf /".
+ *
+ * Arguments are separated by U+200E LEFT-TO-RIGHT MARK as well as a space.
+ * Without it, the quotes and space between two right-to-left arguments take
+ * their direction, and `cp 'א' 'ב'` is drawn as `cp 'ב' 'א'`.
+ */
+static NSString *command_line(int argc, char **argv) {
+    NSMutableArray<NSString *> *parts = [NSMutableArray arrayWithObject:@"sudo"];
+    for (int i = 1; i < argc && argv[i]; i++) {
+        [parts addObject:quoted_arg(argv[i], i + 1 < argc ? argv[i + 1] : NULL)];
+    }
+    return cut_middle([parts componentsJoinedByString:@"‎ "],
+        kMaxCommandLength, kCommandHead, kCommandTail);
 }
 
 static NSString *working_directory(const char *home) {
@@ -181,7 +252,9 @@ static NSString *requesting_processes(void) {
 
 NSString *tidcmd_build_prompt(int argc, char **argv, const char *home) {
     return [NSString stringWithFormat:@"Command: %@\nDirectory: %@\nRequested by: %@\n\n",
-        command_line(argc, argv), working_directory(home), requesting_processes()];
+        command_line(argc, argv),
+        cut_middle(working_directory(home), kMaxContextLength, kDirectoryHead, kDirectoryTail),
+        cut_middle(requesting_processes(), kMaxContextLength, kRequesterHead, kRequesterTail)];
 }
 
 /*
@@ -229,6 +302,16 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) 
         auditinfo_addr_t session = {0};
         if (getaudit_addr(&session, sizeof session) != 0 ||
             !(session.ai_flags & SESSION_HAS_GRAPHIC_ACCESS)) {
+            return PAM_AUTH_ERR;
+        }
+
+        /*
+         * authd authenticates the owner of this audit session, so its answer
+         * only vouches for that user. sudo can be asking about another one:
+         * with targetpw or runaspw, or from a shell switched to another user.
+         */
+        if (pwd->pw_uid != session.ai_auid) {
+            os_log(tidcmd_log(), "user %d is not the session owner %d", (int)pwd->pw_uid, (int)session.ai_auid);
             return PAM_AUTH_ERR;
         }
 
