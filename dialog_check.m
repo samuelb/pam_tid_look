@@ -1,24 +1,34 @@
 /*
- * dialog_check: shows whether the prompt text reaches the authorization dialog.
+ * dialog_check: shows whether the prompt text reaches the authorization
+ * dialog, and whether the dialog closes when the timeout runs out.
  *
  * The dialog's text cannot be read without Screen Recording or Accessibility
  * permission, but its size can, and the dialog grows with the text it shows.
- * So each check raises the dialog twice, with a short and a long text, and
- * compares the heights:
+ * So each prompt check raises the dialog twice, with a short and a long text,
+ * and compares the heights:
  *
  *   right  An undefined right (Apple's "default" rule), requested by this
  *          program with no prompt and then with a six-line prompt.
  *   sudo   The installed module: `sudo -k /usr/bin/true`, then the same with
  *          40 extra arguments. Only the module's prompt depends on argv.
  *
- * Each dialog is left open for about two seconds and then withdrawn by killing
- * the process that asked for it; authd then closes the dialog. Ctrl-C stops
- * the check and withdraws the open dialog the same way. There is no need to
- * approve anything. If a dialog is approved anyway, sudo runs `/usr/bin/true`
- * as root, or the default rule leaves an admin credential that the session
- * shares for five minutes. The program destroys that credential: see
- * purge_shared_credential(). Only killing this program with SIGKILL skips
- * the cleanup.
+ * Each of these dialogs is left open for about two seconds and then withdrawn
+ * by killing the process that asked for it; authd then closes the dialog.
+ *
+ * The timeout checks leave the dialog alone and wait for it to close by
+ * itself:
+ *
+ *   right  The same undefined right, requested through the module's own
+ *          tidcmd_authorize() with timeout=3.
+ *   sudo   `sudo -k /usr/bin/true` with the timeout set in sudo_local. It is
+ *          skipped when that is 0 (no timeout) or over 60 seconds.
+ *
+ * Ctrl-C stops the check and withdraws the open dialog by killing the process
+ * that asked. There is no need to answer anything. If a dialog is approved
+ * anyway, sudo runs `/usr/bin/true` as root, or the default rule leaves an
+ * admin credential that the session shares for five minutes. The program
+ * destroys that credential: see purge_shared_credential(). Only killing this
+ * program with SIGKILL skips the cleanup.
  */
 
 #import <CoreGraphics/CoreGraphics.h>
@@ -34,7 +44,13 @@
 
 extern char **environ;
 
+/* From pam_tidcmd.m, which is linked in. */
+unsigned tidcmd_timeout(int argc, const char **argv);
+OSStatus tidcmd_authorize(const char *rightName, const char *prompt, unsigned timeout);
+
 static const char *kProbeRight = "com.github.pam-tidcmd.dialog-check";
+static const unsigned kProbeTimeout = 3;
+static const unsigned kMaxSudoTimeout = 60; /* longer configured timeouts are not waited for */
 
 /* Set on Ctrl-C and the like. The open dialog is then withdrawn as usual and the check stops. */
 static volatile sig_atomic_t stopSignal;
@@ -56,6 +72,16 @@ static int request_right(const char *prompt) {
     /* The default rule shares its credential with the session for five minutes. Destroy it. */
     AuthorizationFree(auth, kAuthorizationFlagDestroyRights);
     return status == errAuthorizationSuccess ? 0 : 1;
+}
+
+/*
+ * Child mode: ask for the probe right the way the module asks for sudo's,
+ * with the given option (timeout=N). Exits 0 if the request ended the way a
+ * dismissed one does (errAuthorizationDenied).
+ */
+static int authorize_like_module(const char *option, const char *prompt) {
+    OSStatus status = tidcmd_authorize(kProbeRight, prompt, tidcmd_timeout(1, &option));
+    return status == errAuthorizationDenied ? 0 : 1;
 }
 
 /*
@@ -89,27 +115,26 @@ static NSDictionary<NSNumber *, NSValue *> *agent_windows(void) {
     return found;
 }
 
-/* Waits up to the given time for the child to end. */
-static BOOL reaped(pid_t pid, int tenths) {
+/* A SecurityAgent window that is not among the given ones, or nil. */
+static NSNumber *new_window(NSSet *before, NSDictionary<NSNumber *, NSValue *> *now) {
+    for (NSNumber *key in now) {
+        if (![before containsObject:key]) return key;
+    }
+    return nil;
+}
+
+/* Waits up to the given time for the child to end. Stores its wait status if status is not NULL. */
+static BOOL reaped(pid_t pid, int tenths, int *status) {
     for (int tick = 0; tick <= tenths; tick++) {
-        pid_t r = waitpid(pid, NULL, WNOHANG);
+        pid_t r = waitpid(pid, status, WNOHANG);
         if (r == pid || (r == -1 && errno == ECHILD)) return YES;
         if (tick < tenths) usleep(100 * 1000);
     }
     return NO;
 }
 
-/* Returned by dialog_height() when a process or dialog could not be ended. */
-static const CGFloat kCleanupFailed = -1;
-
-/*
- * Starts the process, waits for a new SecurityAgent window whose size has
- * settled, then ends the process and waits for the window to close.
- * Returns the window height, 0 if no dialog appeared, or kCleanupFailed.
- */
-static CGFloat dialog_height(NSString *label, char *const argv[]) {
-    NSSet *before = [NSSet setWithArray:agent_windows().allKeys];
-
+/* Starts argv[0] with no terminal and output to /dev/null. Returns 0 if it could not. */
+static pid_t start(NSString *label, char *const argv[]) {
     posix_spawn_file_actions_t files;
     posix_spawn_file_actions_init(&files);
     for (int fd = 0; fd <= 2; fd++) {
@@ -127,6 +152,43 @@ static CGFloat dialog_height(NSString *label, char *const argv[]) {
         printf("  %-24s could not start %s: %s\n", label.UTF8String, argv[0], strerror(err));
         return 0;
     }
+    return pid;
+}
+
+/*
+ * Ends the child if it is still running, then waits for its dialog to close.
+ * Returns NO, after saying so, if either is still there.
+ */
+static BOOL cleaned_up(NSString *label, pid_t pid, BOOL exited, NSNumber *windowID) {
+    if (!exited) {
+        /* SIGKILL, because sudo catches SIGINT and SIGTERM until authentication is over. */
+        kill(pid, SIGKILL);
+        if (!reaped(pid, 50, NULL)) {
+            printf("  %-24s could not end process %d; end it, then cancel its dialog\n", label.UTF8String, pid);
+            return NO;
+        }
+    }
+    BOOL lingering = NO;
+    for (int tick = 0; tick < 30 && (lingering = windowID && agent_windows()[windowID]); tick++) usleep(100 * 1000);
+    if (lingering) {
+        printf("  %-24s the dialog is still open; cancel it\n", label.UTF8String);
+        return NO;
+    }
+    return YES;
+}
+
+/* Returned by dialog_height() when a process or dialog could not be ended. */
+static const CGFloat kCleanupFailed = -1;
+
+/*
+ * Starts the process, waits for a new SecurityAgent window whose size has
+ * settled, then ends the process and waits for the window to close.
+ * Returns the window height, 0 if no dialog appeared, or kCleanupFailed.
+ */
+static CGFloat dialog_height(NSString *label, char *const argv[]) {
+    NSSet *before = [NSSet setWithArray:agent_windows().allKeys];
+    pid_t pid = start(label, argv);
+    if (!pid) return 0;
 
     NSNumber *windowID = nil;
     NSRect last = NSZeroRect;
@@ -140,9 +202,7 @@ static CGFloat dialog_height(NSString *label, char *const argv[]) {
         }
         NSDictionary<NSNumber *, NSValue *> *now = agent_windows();
         if (!windowID) {
-            for (NSNumber *key in now) {
-                if (![before containsObject:key]) windowID = key;
-            }
+            windowID = new_window(before, now);
             continue;
         }
         if (!now[windowID]) {
@@ -154,23 +214,9 @@ static CGFloat dialog_height(NSString *label, char *const argv[]) {
         last = rect;
     }
 
-    if (!exited) {
-        /* If someone answered the dialog, let the child finish, so it can destroy what it was granted. */
-        if (!(closed && reaped(pid, 30))) {
-            /* SIGKILL, because sudo catches SIGINT and SIGTERM until authentication is over. */
-            kill(pid, SIGKILL);
-            if (!reaped(pid, 50)) {
-                printf("  %-24s could not end process %d; end it, then cancel its dialog\n", label.UTF8String, pid);
-                return kCleanupFailed;
-            }
-        }
-    }
-    BOOL lingering = NO;
-    for (int tick = 0; tick < 30 && (lingering = windowID && agent_windows()[windowID]); tick++) usleep(100 * 1000);
-    if (lingering) {
-        printf("  %-24s the dialog is still open; cancel it\n", label.UTF8String);
-        return kCleanupFailed;
-    }
+    /* If someone answered the dialog, let the child finish, so it can destroy what it was granted. */
+    if (!exited && closed) exited = reaped(pid, 30, NULL);
+    if (!cleaned_up(label, pid, exited, windowID)) return kCleanupFailed;
 
     if (steady < 5) {
         printf("  %-24s %s\n", label.UTF8String,
@@ -182,16 +228,101 @@ static CGFloat dialog_height(NSString *label, char *const argv[]) {
     return last.size.height;
 }
 
-static BOOL module_configured(void) {
-    NSString *conf = [NSString stringWithContentsOfFile:@"/etc/pam.d/sudo_local" encoding:NSUTF8StringEncoding error:NULL];
-    for (NSString *line in [conf componentsSeparatedByString:@"\n"]) {
-        NSString *trimmed = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
-        if ([trimmed hasPrefix:@"auth"] && [trimmed containsString:@"pam_tidcmd.so"]) return YES;
+enum { kPass = 0, kFail = 1, kInconclusive = 2, kStopped = 3 };
+
+/*
+ * Starts the process and leaves its dialog alone. Passes if the dialog
+ * closes by itself once the timeout has run out, and the process then exits
+ * by itself with the given status.
+ */
+static int closes_by_itself(NSString *label, char *const argv[], unsigned timeout, int wantExit, const char *what) {
+    NSSet *before = [NSSet setWithArray:agent_windows().allKeys];
+    pid_t pid = start(label, argv);
+    if (!pid) return kInconclusive;
+
+    NSDate *started = [NSDate date];
+    NSNumber *windowID = nil;
+    BOOL exited = NO, closed = NO;
+    int status = 0;
+    while (!stopSignal && -started.timeIntervalSinceNow < timeout + 10) {
+        usleep(100 * 1000);
+        NSDictionary<NSNumber *, NSValue *> *now = agent_windows();
+        if (!windowID) {
+            windowID = new_window(before, now);
+            if (!windowID && waitpid(pid, &status, WNOHANG) == pid) {
+                exited = YES;
+                break;
+            }
+            continue;
+        }
+        if (!now[windowID]) {
+            closed = YES;
+            break;
+        }
     }
-    return NO;
+    NSTimeInterval openFor = -started.timeIntervalSinceNow;
+
+    /*
+     * After the dialog closes, the process should end by itself. sudo finds
+     * no terminal to ask for the password on and exits with status 1; exit
+     * status 0 would mean it ran the command.
+     */
+    if (closed) exited = reaped(pid, 50, &status);
+    BOOL endedByItself = exited;
+    if (!cleaned_up(label, pid, exited, windowID)) return kStopped;
+    if (stopSignal) return kStopped;
+
+    const char *name = label.UTF8String;
+    int verdict;
+    if (!windowID) {
+        printf("  %-24s no dialog appeared\n", name);
+        verdict = kInconclusive;
+    } else if (!closed) {
+        printf("  %-24s the dialog was still open after %.0f s\n", name, openFor);
+        verdict = kFail;
+    } else if (openFor < timeout - 0.5) {
+        printf("  %-24s the dialog closed after %.1f s, before the timeout; was it answered?\n", name, openFor);
+        verdict = kInconclusive;
+    } else if (!endedByItself) {
+        printf("  %-24s the dialog closed after %.1f s, but the process kept running\n", name, openFor);
+        verdict = kFail;
+    } else {
+        BOOL normal = WIFEXITED(status);
+        int code = normal ? WEXITSTATUS(status) : WTERMSIG(status);
+        printf("  %-24s the dialog closed by itself after %.1f s; %s %d (expected exit status %d)\n",
+            name, openFor, normal ? "exit status" : "killed by signal", code, wantExit);
+        verdict = normal && code == wantExit ? kPass : kFail;
+    }
+    printf("  -> %s: %s\n\n", verdict == kPass ? "yes" : verdict == kFail ? "NO" : "inconclusive", what);
+    return verdict;
 }
 
-enum { kPass = 0, kFail = 1, kInconclusive = 2, kStopped = 3 };
+/*
+ * The options on the active pam_tidcmd line in sudo_local, or nil if there is
+ * none. OpenPAM ends a line at the first #, even inside a word.
+ */
+static NSArray<NSString *> *module_options(void) {
+    NSString *conf = [NSString stringWithContentsOfFile:@"/etc/pam.d/sudo_local" encoding:NSUTF8StringEncoding error:NULL];
+    NSPredicate *nonEmpty = [NSPredicate predicateWithFormat:@"length > 0"];
+    for (NSString *line in [conf componentsSeparatedByString:@"\n"]) {
+        NSString *active = [line componentsSeparatedByString:@"#"].firstObject;
+        NSArray<NSString *> *fields = [[active componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet]
+            filteredArrayUsingPredicate:nonEmpty];
+        if (fields.count >= 3 && [fields[0] isEqualToString:@"auth"] &&
+            ([fields[2] isEqualToString:@"pam_tidcmd.so"] || [fields[2] hasSuffix:@"/pam_tidcmd.so"])) {
+            return [fields subarrayWithRange:NSMakeRange(3, fields.count - 3)];
+        }
+    }
+    return nil;
+}
+
+/* The timeout the module reads from those options. */
+static unsigned configured_timeout(NSArray<NSString *> *options) {
+    const char *argv[options.count + 1];
+    for (NSUInteger i = 0; i < options.count; i++) argv[i] = options[i].UTF8String;
+    argv[options.count] = NULL;
+    return tidcmd_timeout((int)options.count, argv);
+}
 
 /* Prints the verdict for one pair of measurements. */
 static int verdict(const char *what, CGFloat shortText, CGFloat longText) {
@@ -213,6 +344,9 @@ int main(int argc, char **argv) {
         if (argc >= 2 && strcmp(argv[1], "--request") == 0) {
             return request_right(argc >= 3 ? argv[2] : NULL);
         }
+        if (argc >= 4 && strcmp(argv[1], "--authorize") == 0) {
+            return authorize_like_module(argv[2], argv[3]);
+        }
 
         char self[PATH_MAX];
         uint32_t size = sizeof self;
@@ -224,7 +358,7 @@ int main(int argc, char **argv) {
         sigaction(SIGTERM, &sa, NULL);
         sigaction(SIGHUP, &sa, NULL);
 
-        printf("Raising authorization dialogs and closing them again. Do not approve them.\n\n");
+        printf("Raising authorization dialogs and closing them again. Do not answer them.\n\n");
         int result = kPass;
 
         printf("Unprivileged right (Apple's default rule):\n");
@@ -239,24 +373,54 @@ int main(int argc, char **argv) {
         }
         result = worse(result, verdict("the dialog shows a prompt from the request", plain, prompted));
 
-        printf("sudo with pam_tidcmd:\n");
-        if (!module_configured()) {
-            printf("  -> skipped: pam_tidcmd is not active in /etc/pam.d/sudo_local\n");
-        } else {
-            CGFloat shortCommand = dialog_height(@"sudo -k /usr/bin/true",
-                (char *[]){"/usr/bin/sudo", "-k", "/usr/bin/true", NULL});
-            char *longArgv[44] = {"/usr/bin/sudo", "-k", "/usr/bin/true"};
-            for (int i = 0; i < 40; i++) longArgv[3 + i] = "padding";
-            longArgv[43] = NULL;
-            CGFloat longCommand = shortCommand == kCleanupFailed || stopSignal ? kCleanupFailed :
-                dialog_height(@"... plus 40 arguments", longArgv);
-            if (stopSignal) return 128 + stopSignal;
-            if (shortCommand == kCleanupFailed || longCommand == kCleanupFailed) {
-                printf("  -> stopped\n");
-                return kStopped;
-            }
-            result = worse(result, verdict("sudo's dialog shows the command line", shortCommand, longCommand));
+        char option[32];
+        snprintf(option, sizeof option, "timeout=%u", kProbeTimeout);
+        printf("The same right, asked for the way the module asks (%s):\n", option);
+        int closed = closes_by_itself([NSString stringWithUTF8String:option],
+            (char *[]){self, "--authorize", option, "This dialog closes by itself.", NULL},
+            kProbeTimeout, 0, "the dialog closes when the timeout runs out");
+        purge_shared_credential();
+        if (stopSignal) return 128 + stopSignal;
+        if (closed == kStopped) {
+            printf("  -> stopped\n");
+            return kStopped;
         }
-        return result;
+        result = worse(result, closed);
+
+        printf("sudo with pam_tidcmd:\n");
+        NSArray<NSString *> *options = module_options();
+        if (!options) {
+            printf("  -> skipped: pam_tidcmd is not active in /etc/pam.d/sudo_local\n");
+            return result;
+        }
+        CGFloat shortCommand = dialog_height(@"sudo -k /usr/bin/true",
+            (char *[]){"/usr/bin/sudo", "-k", "/usr/bin/true", NULL});
+        char *longArgv[44] = {"/usr/bin/sudo", "-k", "/usr/bin/true"};
+        for (int i = 0; i < 40; i++) longArgv[3 + i] = "padding";
+        longArgv[43] = NULL;
+        CGFloat longCommand = shortCommand == kCleanupFailed || stopSignal ? kCleanupFailed :
+            dialog_height(@"... plus 40 arguments", longArgv);
+        if (stopSignal) return 128 + stopSignal;
+        if (shortCommand == kCleanupFailed || longCommand == kCleanupFailed) {
+            printf("  -> stopped\n");
+            return kStopped;
+        }
+        result = worse(result, verdict("sudo's dialog shows the command line", shortCommand, longCommand));
+
+        unsigned timeout = configured_timeout(options);
+        if (timeout == 0 || timeout > kMaxSudoTimeout) {
+            printf(timeout == 0 ? "  -> skipped: timeout=0, so sudo's dialog has no timeout\n" :
+                "  -> skipped: the timeout is %u s; this check waits for at most %u s\n", timeout, kMaxSudoTimeout);
+            return result;
+        }
+        printf("  (leave the next dialog alone for %u s)\n", timeout);
+        closed = closes_by_itself(@"sudo -k /usr/bin/true", (char *[]){"/usr/bin/sudo", "-k", "/usr/bin/true", NULL},
+            timeout, 1, "sudo's dialog closes when the timeout runs out");
+        if (stopSignal) return 128 + stopSignal;
+        if (closed == kStopped) {
+            printf("  -> stopped\n");
+            return kStopped;
+        }
+        return worse(result, closed);
     }
 }

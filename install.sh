@@ -1,11 +1,17 @@
 #!/bin/bash
 # Installs or removes pam_tidcmd for sudo.
 #
-#   sudo ./install.sh            install, then ask you to confirm sudo still works
-#   sudo ./install.sh uninstall  go back to Apple's pam_tid.so
+#   sudo ./install.sh                 install, then ask you to confirm sudo still works
+#   sudo ./install.sh --timeout 60    the same, with the dialog waiting 60 seconds
+#   sudo ./install.sh uninstall       go back to Apple's pam_tid.so
 #
 # Only /etc/pam.d/sudo_local is edited. If you do not confirm that sudo works
 # within five minutes, the previous file is put back.
+#
+# --timeout sets how long the Touch ID dialog waits for a fingerprint before
+# it closes and sudo asks for the password: 0 to 3600 seconds, 0 for no limit.
+# Without it, a reinstall keeps the current setting and a first install
+# leaves the module's default.
 
 set -euo pipefail
 
@@ -21,6 +27,45 @@ SRC="$(cd "$(dirname "$0")" && pwd)/pam_tidcmd.so"
 # backslashes, because awk -v would interpret backslashes.
 TID_RE='(^|/)pam_tid[.]so([.][0-9]+)?$'
 TIDCMD_RE='(^|/)pam_tidcmd[.]so$'
+DEFAULT_TIMEOUT=30 # kDefaultTimeout in pam_tidcmd.m
+
+usage() {
+    echo "usage: sudo $0 [install] [--timeout SECONDS] | uninstall" >&2
+    exit 2
+}
+
+# The same rule as the module: at most four digits, 3600 at most.
+valid_timeout() {
+    [[ $1 =~ ^[0-9]{1,4}$ ]] && [ $((10#$1)) -le 3600 ]
+}
+
+action=install
+timeout=
+timeout_given=0
+while [ $# -gt 0 ]; do
+    case $1 in
+    install | uninstall) action=$1 ;;
+    --timeout)
+        [ $# -ge 2 ] || usage
+        timeout=$2
+        timeout_given=1
+        shift
+        ;;
+    --timeout=*)
+        timeout=${1#--timeout=}
+        timeout_given=1
+        ;;
+    *) usage ;;
+    esac
+    shift
+done
+if [ "$timeout_given" = 1 ]; then
+    if [ "$action" != install ] || ! valid_timeout "$timeout"; then
+        echo "--timeout takes 0 to 3600 seconds, and only when installing." >&2
+        exit 2
+    fi
+    timeout=$((10#$timeout))
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "Run this with sudo." >&2
@@ -51,17 +96,29 @@ without_tidcmd() { # prints the config with this module removed and pam_tid.so r
     ' "$CONF"
 }
 
+# The last timeout= value on the current pam_tidcmd line, if any. OpenPAM
+# ends a line at the first #, even inside a word, so that is cut off first.
+current_timeout() {
+    [ -f "$CONF" ] || return 0
+    awk -v re="$TIDCMD_RE" '
+        { line = $0; sub(/#.*/, "", line); n = split(line, f) }
+        f[1] == "auth" && f[3] ~ re { for (i = 4; i <= n; i++) if (f[i] ~ /^timeout=/) t = substr(f[i], 9) }
+        END { print t }
+    ' "$CONF"
+}
+
 # The new line takes the place of the pam_tid.so line, with its control flag.
-# Without one, it is added at the end as sufficient.
+# Without one, it is added at the end as sufficient. $options goes after the
+# module path.
 with_tidcmd() { # prints the config with pam_tid.so replaced by this module
-    without_tidcmd | awk -v dest="$DEST" -v tag="$TAG" -v re="$TID_RE" '
+    without_tidcmd | awk -v dest="$DEST" -v opts="$options" -v tag="$TAG" -v re="$TID_RE" '
         $1 == "auth" && $3 ~ re {
-            if (!placed) { printf "auth       %-14s %s\n", $2, dest; placed = 1 }
+            if (!placed) { printf "auth       %-14s %s%s\n", $2, dest, opts; placed = 1 }
             print tag $0
             next
         }
         { print }
-        END { if (!placed) printf "auth       %-14s %s\n", "sufficient", dest }
+        END { if (!placed) printf "auth       %-14s %s%s\n", "sufficient", dest, opts }
     '
 }
 
@@ -88,7 +145,7 @@ finish() {
     rm -rf "$LOCK"
 }
 
-case "${1:-install}" in
+case "$action" in
 install)
     if [ ! -f "$SRC" ]; then
         echo "pam_tidcmd.so not found next to this script. Run 'make' first." >&2
@@ -117,6 +174,16 @@ install)
         echo "$CONF has $count active pam_tid.so lines. Leave one and run this again." >&2
         exit 1
     fi
+
+    if [ "$timeout_given" = 0 ]; then
+        timeout=$(current_timeout)
+        if [ -n "$timeout" ] && ! valid_timeout "$timeout"; then
+            echo "$CONF sets timeout=$timeout, which is not 0 to 3600 seconds. Pass --timeout." >&2
+            exit 1
+        fi
+        [ -z "$timeout" ] || timeout=$((10#$timeout))
+    fi
+    options=${timeout:+ timeout=$timeout}
 
     install -d -o root -g wheel -m 755 "$DEST_DIR"
     chmod -N "$DEST_DIR"
@@ -163,6 +230,11 @@ install)
 
     write_conf with_tidcmd
 
+    if [ "${timeout:-$DEFAULT_TIMEOUT}" = 0 ]; then
+        closes="It stays open until you answer it (timeout=0)."
+    else
+        closes="Left alone, it closes after ${timeout:-$DEFAULT_TIMEOUT} seconds and sudo asks for the password."
+    fi
     cat <<EOF
 
 Installed. $CONF now reads:
@@ -173,7 +245,9 @@ Now open a NEW terminal window and run:
 
     sudo -k true
 
-The Touch ID dialog should show the command. Leave this window open.
+The Touch ID dialog should show the command.
+$closes
+Leave this window open.
 EOF
     answer=
     read -r -t 300 -p "Did sudo work in the other window? [y/N] " answer < /dev/tty || true
@@ -199,9 +273,5 @@ uninstall)
     else
         echo "Removed."
     fi
-    ;;
-*)
-    echo "usage: sudo $0 [install|uninstall]" >&2
-    exit 2
     ;;
 esac

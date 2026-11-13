@@ -81,13 +81,71 @@ It never fails open.
 ### Result mapping
 
 Only `errAuthorizationSuccess` returns `PAM_SUCCESS`. Everything else, including
-cancelling the dialog, returns `PAM_AUTH_ERR`. With the module configured as
-`sufficient`, sudo then continues to the normal password prompt. Cancelling
-returns `errAuthorizationCanceled` (-60006), and sudo was seen to ask for the
-password on the terminal.
+cancelling the dialog and the dialog timing out, returns `PAM_AUTH_ERR`. With
+the module configured as `sufficient`, sudo then continues to the normal
+password prompt. Cancelling returns `errAuthorizationCanceled` (-60006), and
+sudo was seen to ask for the password on the terminal.
 
-The module takes no options. In particular, the right name cannot be changed
-from the PAM config.
+### Timeout
+
+If nobody answers the dialog within the timeout, 30 seconds by default, the
+module closes it and sudo asks for the password on the terminal, as it does
+after Cancel. Without this, a sudo started while you are away, or by a program
+that waits for it, hangs on the dialog until someone answers it.
+
+The module sends the request with `AuthorizationCopyRightsAsync` and waits for
+the answer. When the timeout runs out, it calls `AuthorizationDismiss()`.
+authd then destroys the request's SecurityAgent UI and ends the request with
+`errAuthorizationDenied` (-60005), which maps to `PAM_AUTH_ERR`. authd's answer
+still decides: a fingerprint accepted just before the dismissal still returns
+`PAM_SUCCESS`.
+
+The dismissal is handled while the request is still waiting, because authd
+runs each message from a client on a concurrent queue (`OSX/authd/main.c`),
+and the dismissal does not wait for the per-connection queue that the pending
+request holds (`connection_destroy_agents()` in `OSX/authd/connection.c`).
+
+`AuthorizationDismiss()` is private API. `AuthorizationPriv.h` describes it as
+dismissing "all Authorization dialogs associated to the calling process"; in
+sudo, that is only this module's dialog. The module looks it up at run time.
+If it is missing after a macOS update, the module logs an error and the dialog
+waits for an answer without a time limit, as Apple's does.
+
+authd ignores a dismissal that reaches it before the request's dialog exists:
+`connection_destroy_agents()` acts only on a running engine, and
+`engine_authorize()` clears the dismissed flag when it starts. The request is
+sent from a dispatch queue, so this is possible in principle with a short
+timeout. The module therefore repeats the dismissal every second until the
+request has ended, and logs an error if the first one did not end it.
+
+The time counts from the request. It does not restart when you interact with
+the dialog, so a password being typed into the dialog's own password field is
+cut off too.
+
+Other ways to close the dialog were rejected:
+
+- Killing the requesting process closes the dialog (see Verification), but
+  here that process is sudo. The request would have to come from a forked
+  child, and XPC and Objective-C are not safe to use in a child forked without
+  exec.
+- No dialog timeout was found in authd's source. The rule attribute `timeout`
+  is how long a credential may be reused, not how long a dialog stays open.
+
+### Options
+
+The module takes one option, on its line in the PAM config:
+
+```
+auth       sufficient     /Library/Security/pam_tidcmd/pam_tidcmd.so timeout=60
+```
+
+`timeout=SECONDS` is how long the dialog waits for an answer, a whole number
+from 0 to 3600 written with at most four digits. 0 means no limit. Without the
+option, the timeout is 30 seconds. An invalid value is logged and the default
+is used: the timeout only decides how soon sudo falls back to the password,
+not whether anyone gets in, so a typo should not disable Touch ID. Unknown
+options are logged and ignored. The right name cannot be changed from the PAM
+config.
 
 ## The prompt
 
@@ -215,7 +273,12 @@ The existing `pam_tid.so` line is commented out with the prefix `#pam_tidcmd# `
 and the new line is put in its place, with the same control flag (`sufficient`
 when there was no `pam_tid.so` line and the new one is added at the end).
 Changing a `required` line to `sufficient` would let Touch ID skip the rules
-after it. Uninstalling removes the new line and strips that prefix, which
+after it.
+
+`--timeout SECONDS` puts `timeout=SECONDS` on the new line, checked by the same
+rule as the module's. Without it, a reinstall keeps the `timeout=` value of the
+current line, and stops if that value is invalid; a first install writes no
+option, so the module's default applies. Uninstalling removes the new line and strips that prefix, which
 restores the file exactly. Leaving both modules active was rejected because
 cancelling the first dialog would raise a second one.
 
@@ -256,12 +319,16 @@ truncation, and the Touch ID availability check. The availability check was also
 confirmed to answer per user: usable for the logged-in user, not usable for root
 or a nonexistent uid.
 
-`make dialog-check` checks that the prompt is drawn. It raises real dialogs for
-about two seconds each and closes them by killing the process that asked
-(SIGKILL, since sudo ignores the others). Ctrl-C stops it the same way. It
-cannot read the dialog's text without Screen Recording or Accessibility
-permission, but it can read the dialog's size, so it compares the height for a
-short and a long text, twice:
+`make test` also checks how the `timeout=` option is read, including the
+values that fall back to the default.
+
+`make dialog-check` checks that the prompt is drawn and that the dialog closes
+when the timeout runs out. For the prompt, it raises real dialogs for about two
+seconds each and closes them by killing the process that asked (SIGKILL, since
+sudo ignores the others). Ctrl-C stops it the same way. It cannot read the
+dialog's text without Screen Recording or Accessibility permission, but it can
+read the dialog's size, so it compares the height for a short and a long text,
+twice:
 
 - a right of its own, with no prompt and with a six-line prompt. An undefined
   right falls back to Apple's `default` rule, so no root and no
@@ -272,6 +339,16 @@ short and a long text, twice:
   destroys whatever that yields.
 - `sudo -k /usr/bin/true` through the installed module, with and without 40
   extra arguments. Only the module's prompt depends on the command line.
+
+For the timeout, it leaves the dialog alone and checks that it closes by itself
+after the timeout and that the process that asked then ends by itself:
+
+- the same right of its own, asked for through the module's own
+  `tidcmd_authorize()` with `timeout=3`. The request must end with
+  `errAuthorizationDenied`, as a dismissed one does.
+- `sudo -k /usr/bin/true` with the timeout set in `sudo_local`. sudo has no
+  terminal there, so after the dialog closes it fails to ask for a password and
+  exits. This is skipped when the timeout is 0 or over 60 seconds.
 
 Approving and cancelling need a person and were tested by hand (see
 Verification).
@@ -303,6 +380,22 @@ installed.
 - **Approving** with Touch ID: sudo exits 0.
 - **Cancelling:** sudo prints `Password:` on the terminal. Ctrl-C at that prompt
   ends sudo with "a password is required".
+- **Timeout, on a right of its own.** `dialog_check` asked for its own right
+  through `tidcmd_authorize()` with `timeout=3`: the dialog closed by itself
+  after 3.2 seconds and the request returned `errAuthorizationDenied`. The
+  module logged "no answer after 3 seconds; dismissing the dialog". With
+  `timeout=0` instead, the dialog was still open after 13 seconds and the check
+  failed, as it should. A first experiment calling `AuthorizationDismiss()`
+  directly saw the request end 13 ms after the call.
+- **A lost dismissal is repeated.** A test program defined its own
+  `AuthorizationDismiss()`, which the module's lookup finds first, dropping the
+  first call and passing later ones on. With `timeout=2`, the module dismissed
+  at 2.0 s (dropped) and again at 3.0 s, the dialog closed, the request
+  returned `errAuthorizationDenied`, and the module logged the error once.
+- **Unverified: timeout of sudo's own dialog.** The Touch ID dialog for
+  `com.apple.security.sudo` is expected to close the same way, since the
+  dismissal acts on the request, not on the rule. This was not yet run with the
+  module installed: `make dialog-check` does it.
 - **Closing the dialog from the terminal.** sudo catches SIGINT and SIGTERM while
   it authenticates (`init_signals()` in sudo's `src/signal.c`), so neither Ctrl-C
   nor `kill` ends it while the dialog is open. With SIGTERM the dialog was seen to
@@ -317,8 +410,12 @@ installed.
   `Defaults timestamp_timeout=0` in sudoers makes every command prompt.
 - **Scripts.** `sudo ./script.sh` shows the script path, not its contents.
 - **No way out from the terminal.** While the dialog is open, Ctrl-C in the
-  terminal does nothing. The dialog has to be answered, or sudo killed with
-  SIGKILL from elsewhere. This is sudo's behaviour (see Verification).
+  terminal does nothing. The dialog has to be answered or left to time out, or
+  sudo killed with SIGKILL from elsewhere. This is sudo's behaviour (see
+  Verification).
+- **The timeout does not wait for typing.** It counts from the request, so it
+  also closes the dialog while a password is being typed into it.
 - **Private API.** The Touch ID availability check may stop working after a
-  macOS update, in which case sudo falls back to the password prompt.
+  macOS update, in which case sudo falls back to the password prompt. So may
+  `AuthorizationDismiss()`, in which case the dialog has no timeout.
 - **Scope.** The module is for sudo only.

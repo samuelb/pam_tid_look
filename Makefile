@@ -17,8 +17,8 @@ test: tidcmd_test
 	./tidcmd_test
 
 # Raises real authorization dialogs for a moment. See dialog_check.m.
-dialog_check: dialog_check.m
-	$(CC) $(CFLAGS) -o $@ $< -framework Foundation -framework CoreGraphics -framework Security
+dialog_check: dialog_check.m pam_tidcmd.m
+	$(CC) $(CFLAGS) -o $@ dialog_check.m pam_tidcmd.m -framework CoreGraphics $(LIBS)
 
 dialog-check: dialog_check
 	./dialog_check

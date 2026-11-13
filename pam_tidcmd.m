@@ -18,6 +18,7 @@
 #import <Security/AuthorizationTags.h>
 #import <bsm/audit.h>
 #import <crt_externs.h>
+#import <dlfcn.h>
 #import <libproc.h>
 #import <objc/message.h>
 #import <os/log.h>
@@ -49,6 +50,12 @@ enum {
     kRequesterHead = 120,    /* the nearest processes come first */
     kRequesterTail = 60,
     kMaxAncestors = 5,
+};
+
+enum {
+    kDefaultTimeout = 30, /* seconds the dialog waits for an answer */
+    kMaxTimeout = 3600,
+    kDismissRetry = 1,    /* seconds between dismissals while the request is still pending */
 };
 
 static os_log_t tidcmd_log(void) {
@@ -286,9 +293,93 @@ BOOL tidcmd_touchid_usable(uid_t uid) {
     return NO;
 }
 
+/*
+ * The dialog's timeout in seconds, from the module's options in the PAM
+ * config: timeout=SECONDS, a whole number from 0 to 3600 (at most four
+ * digits). 0 means no timeout. Without the option, or with an invalid value,
+ * it is kDefaultTimeout. Unknown options are logged and ignored.
+ */
+unsigned tidcmd_timeout(int argc, const char **argv) {
+    static const char key[] = "timeout=";
+    unsigned timeout = kDefaultTimeout;
+    for (int i = 0; i < argc && argv[i]; i++) {
+        if (strncmp(argv[i], key, strlen(key)) != 0) {
+            os_log_error(tidcmd_log(), "ignoring unknown option %{public}s", argv[i]);
+            continue;
+        }
+        const char *value = argv[i] + strlen(key);
+        size_t digits = strspn(value, "0123456789");
+        if (digits == 0 || digits > 4 || value[digits] != '\0' || atoi(value) > kMaxTimeout) {
+            os_log_error(tidcmd_log(), "ignoring %{public}s: expected 0 to %d seconds", argv[i], kMaxTimeout);
+            continue;
+        }
+        timeout = (unsigned)atoi(value);
+    }
+    return timeout;
+}
+
+/*
+ * Asks authd for the right, showing the prompt, and returns its answer. If
+ * the dialog is still open after timeout seconds (0: no limit), it is
+ * dismissed, which makes authd end the request. The answer still decides:
+ * a fingerprint given just before the dismissal is still a success.
+ *
+ * authd ignores a dismissal that reaches it before the request's dialog
+ * exists: connection_destroy_agents() acts only on a running engine, and
+ * engine_authorize() clears the dismissed flag when it starts. So the
+ * dismissal is repeated until the request has ended.
+ *
+ * AuthorizationDismiss() is private API (AuthorizationPriv.h). If it is ever
+ * missing, the dialog waits for an answer without a time limit.
+ */
+OSStatus tidcmd_authorize(const char *rightName, const char *prompt, unsigned timeout) {
+    AuthorizationRef authorization = NULL;
+    OSStatus status = AuthorizationCreate(NULL, NULL, kAuthorizationFlagDefaults, &authorization);
+    if (status != errAuthorizationSuccess) {
+        os_log_error(tidcmd_log(), "AuthorizationCreate failed: %d", (int)status);
+        return status;
+    }
+
+    OSStatus (*dismiss)(void) = NULL;
+    if (timeout > 0) {
+        dismiss = (OSStatus (*)(void))dlsym(RTLD_DEFAULT, "AuthorizationDismiss");
+        if (!dismiss) os_log_error(tidcmd_log(), "AuthorizationDismiss is missing; the dialog has no timeout");
+    }
+
+    AuthorizationItem right = {rightName, 0, NULL, 0};
+    AuthorizationRights rights = {1, &right};
+    AuthorizationItem promptItem = {kAuthorizationEnvironmentPrompt, strlen(prompt), (void *)prompt, 0};
+    AuthorizationEnvironment environment = {1, &promptItem};
+    dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+    __block OSStatus result = errAuthorizationInternal;
+    /* The callback runs on a dispatch queue. Every path below waits for it. */
+    AuthorizationCopyRightsAsync(authorization, &rights, &environment,
+        kAuthorizationFlagDefaults | kAuthorizationFlagInteractionAllowed | kAuthorizationFlagExtendRights,
+        ^(OSStatus err, AuthorizationRights *granted) {
+            result = err;
+            if (granted) AuthorizationFreeItemSet(granted);
+            dispatch_semaphore_signal(answered);
+        });
+
+    dispatch_time_t deadline = dismiss ?
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout * NSEC_PER_SEC) : DISPATCH_TIME_FOREVER;
+    if (dispatch_semaphore_wait(answered, deadline) != 0) {
+        os_log(tidcmd_log(), "no answer after %u seconds; dismissing the dialog", timeout);
+        for (BOOL first = YES; ; first = NO) {
+            OSStatus dismissed = dismiss();
+            if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, kDismissRetry * NSEC_PER_SEC)) == 0) break;
+            if (first) os_log_error(tidcmd_log(), "the dialog did not close (%d); dismissing it again", (int)dismissed);
+        }
+    }
+    AuthorizationFree(authorization, kAuthorizationFlagDefaults);
+    return result;
+}
+
 EXPORT PAM_EXTERN int
 pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) {
     @autoreleasepool {
+        unsigned timeout = tidcmd_timeout(argc, argv);
+
         const char *user = NULL;
         struct passwd pwdbuf, *pwd = NULL;
         char pwdstore[4096];
@@ -326,25 +417,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) 
         }
 
         const char *prompt = tidcmd_build_prompt(*_NSGetArgc(), *_NSGetArgv(), pwd->pw_dir).UTF8String;
-
-        AuthorizationRef authorization = NULL;
-        OSStatus status = AuthorizationCreate(NULL, NULL, kAuthorizationFlagDefaults, &authorization);
-        if (status != errAuthorizationSuccess) {
-            os_log_error(tidcmd_log(), "AuthorizationCreate failed: %d", (int)status);
-            return PAM_AUTH_ERR;
-        }
-
-        AuthorizationItem right = {"com.apple.security.sudo", 0, NULL, 0};
-        AuthorizationRights rights = {1, &right};
-        AuthorizationItem promptItem = {kAuthorizationEnvironmentPrompt, strlen(prompt), (void *)prompt, 0};
-        AuthorizationEnvironment environment = {1, &promptItem};
-        AuthorizationRights *granted = NULL;
-        status = AuthorizationCopyRights(authorization, &rights, &environment,
-            kAuthorizationFlagDefaults | kAuthorizationFlagInteractionAllowed | kAuthorizationFlagExtendRights,
-            &granted);
-        if (granted) AuthorizationFreeItemSet(granted);
-        AuthorizationFree(authorization, kAuthorizationFlagDefaults);
-
+        OSStatus status = tidcmd_authorize("com.apple.security.sudo", prompt, timeout);
         os_log_debug(tidcmd_log(), "authorization result: %d", (int)status);
         return status == errAuthorizationSuccess ? PAM_SUCCESS : PAM_AUTH_ERR;
     }

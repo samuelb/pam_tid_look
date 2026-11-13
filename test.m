@@ -5,6 +5,7 @@
 
 NSString *tidcmd_build_prompt(int argc, char **argv, const char *home);
 BOOL tidcmd_touchid_usable(uid_t uid);
+unsigned tidcmd_timeout(int argc, const char **argv);
 
 static int failures;
 
@@ -45,6 +46,12 @@ static NSString *line_with_arg(NSData *arg, const char *home) {
     NSMutableData *bytes = [arg mutableCopy];
     [bytes appendBytes:"" length:1];
     return first_line(tidcmd_build_prompt(3, exec_layout(3, (char *[]){"sudo", "echo", bytes.mutableBytes}), home));
+}
+
+/* The timeout read from the given module options. */
+static void expect_timeout(NSString *label, unsigned wanted, int argc, const char **argv) {
+    unsigned got = tidcmd_timeout(argc, argv);
+    check(got == wanted, label, [NSString stringWithFormat:@"%u seconds (wanted %u)", got, wanted]);
 }
 
 #define ARGV(...) ((char *[]){__VA_ARGS__, NULL})
@@ -143,6 +150,18 @@ int main(void) {
         check(entered && [dirLine containsString:@"CHARACTERS NOT SHOWN"] && dirLine.length < 260,
             @"a long working directory is cut in the middle",
             [NSString stringWithFormat:@"%lu chars: %@…", (unsigned long)dirLine.length, [dirLine substringToIndex:MIN(dirLine.length, 60)]]);
+
+        expect_timeout(@"no options: default timeout", 30, 0, (const char *[]){NULL});
+        expect_timeout(@"timeout=5", 5, 1, (const char *[]){"timeout=5"});
+        expect_timeout(@"timeout=0 turns it off", 0, 1, (const char *[]){"timeout=0"});
+        expect_timeout(@"timeout=3600 is the maximum", 3600, 1, (const char *[]){"timeout=3600"});
+        expect_timeout(@"the last valid value wins", 7, 3, (const char *[]){"timeout=5", "timeout=7", "timeout=x"});
+        expect_timeout(@"unknown options are ignored", 9, 2, (const char *[]){"debug", "timeout=9"});
+        const char *invalid[] = {"timeout=3601", "timeout=", "timeout=-1", "timeout=+5", "timeout=5s",
+            "timeout=1.5", "timeout=00005", "timeout=99999999999999999999", "Timeout=5", "timeout"};
+        for (size_t i = 0; i < sizeof invalid / sizeof *invalid; i++) {
+            expect_timeout([NSString stringWithFormat:@"%s keeps the default", invalid[i]], 30, 1, &invalid[i]);
+        }
 
         printf("\nFull prompt for a plain command:\n---\n%s---\n",
             PROMPT("sudo", "brew", "services", "restart", "nginx").UTF8String);
