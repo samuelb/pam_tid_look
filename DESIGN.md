@@ -6,8 +6,8 @@ Written 2026-11-13, against macOS 27.2.1 and sudo 1.9.17p2.
 like Apple's `pam_tid.so`, and adds the sudo command line to the dialog so you
 can see what you are approving.
 
-This file records why it is built the way it is. Items marked **Unverified**
-have not been confirmed on a real install.
+This file records why it is built the way it is. What was checked on a real
+install, and how, is under [Verification](#verification).
 
 ## Why a new module
 
@@ -44,8 +44,9 @@ string. That was rejected:
 The right's rule is "2 of: `entitled`, `authenticate-session-owner`". The
 `entitled` part requires the calling process to hold Apple's sudo entitlement.
 The module inherits that by being loaded into sudo. Loaded anywhere else, the
-request is denied. This is also why the dialog cannot be exercised by a test
-program.
+request is denied at once, without a dialog (`errAuthorizationDenied`). So a
+test program cannot raise sudo's dialog itself. It can raise the same
+SecurityAgent dialog for a right of its own, which `make dialog-check` does.
 
 ### Checks before the dialog
 
@@ -72,7 +73,9 @@ It never fails open.
 
 Only `errAuthorizationSuccess` returns `PAM_SUCCESS`. Everything else, including
 cancelling the dialog, returns `PAM_AUTH_ERR`. With the module configured as
-`sufficient`, sudo then continues to the normal password prompt.
+`sufficient`, sudo then continues to the normal password prompt. Cancelling
+returns `errAuthorizationCanceled` (-60006), and sudo was seen to ask for the
+password on the terminal.
 
 The module takes no options. In particular, the right name cannot be changed
 from the PAM config.
@@ -100,8 +103,11 @@ Requested by: zsh ← claude ← T3 Code (Beta)
 Each line starts with a label so the text still reads correctly if the dialog
 collapses line breaks into spaces.
 
-**Unverified:** how the system dialog renders this text, including whether line
-breaks are kept.
+The dialog keeps the line breaks, so each label starts its own line. The dialog
+is 260 points wide, so long lines wrap and the dialog grows taller. A single
+400-character line makes it about twice as tall. The prompt ends with two
+newlines, but they do not show as a gap: the text runs straight into the
+dialog's next line.
 
 ### Making the text safe to read
 
@@ -135,8 +141,7 @@ its own executable name.
 
 - **Architectures:** arm64e, arm64 and x86_64 in one file. System binaries on
   Apple silicon are arm64e, so that slice is the one sudo is expected to load.
-  **Unverified:** that sudo loads an ad-hoc signed arm64e module. The arm64
-  slice was loaded successfully by `python3`.
+  sudo on Apple silicon loads this ad-hoc signed build (see Verification).
 - **Exports:** compiled with hidden visibility. Only `pam_sm_authenticate`,
   `pam_sm_setcred` and `pam_sm_acct_mgmt` are exported.
 - **Signing:** ad-hoc.
@@ -183,8 +188,59 @@ truncation, and the Touch ID availability check. The availability check was also
 confirmed to answer per user: usable for the logged-in user, not usable for root
 or a nonexistent uid.
 
-The authorization request and the dialog are not covered, for the reason given
-under "It only works inside `/usr/bin/sudo`".
+`make dialog-check` checks that the prompt is drawn. It raises real dialogs for
+about two seconds each and closes them by killing the process that asked
+(SIGKILL, since sudo ignores the others). Ctrl-C stops it the same way. It
+cannot read the dialog's text without Screen Recording or Accessibility
+permission, but it can read the dialog's size, so it compares the height for a
+short and a long text, twice:
+
+- a right of its own, with no prompt and with a six-line prompt. An undefined
+  right falls back to Apple's `default` rule, so no root and no
+  `security authorizationdb write` are needed. If such a dialog is approved,
+  that rule leaves an admin credential that the whole session shares for five
+  minutes. The program destroys it: it lets a child whose dialog was answered
+  finish and free its rights, then asks for the right again without UI and
+  destroys whatever that yields.
+- `sudo -k /usr/bin/true` through the installed module, with and without 40
+  extra arguments. Only the module's prompt depends on the command line.
+
+Approving and cancelling need a person and were tested by hand (see
+Verification).
+
+## Verification
+
+Checked on 2026-11-13 on Apple silicon with macOS 27.2.1, with the module
+installed.
+
+- **The module loads in sudo.** The unified log shows the module's own
+  `pam_tidcmd` log line in the sudo process, and authd granting
+  `com.apple.security.sudo` to `/usr/bin/sudo`.
+- **The prompt reaches the dialog.** authd copies the request's environment into
+  the hints it sends to SecurityAgent (`auth_items_copy(engine->hints,
+  environment)` in `OSX/authd/engine.m`, Security-61901.120.67), and
+  SecurityAgent reads the `prompt` hint. `dialog_check` measured the heights
+  below. The sudo ones vary by a line or so with the Requested by chain, which
+  depends on how the check is started:
+
+  | Dialog | Height (points) |
+  | --- | --- |
+  | Own right, no prompt | 257 |
+  | Own right, six-line prompt | 321 |
+  | `sudo -k /usr/bin/true` | 369 |
+  | The same with 40 extra arguments | 577 |
+
+  Looking at the dialog confirmed it: the Command, Directory and Requested by
+  lines each start a new line and are readable.
+- **Approving** with Touch ID: sudo exits 0.
+- **Cancelling:** sudo prints `Password:` on the terminal. Ctrl-C at that prompt
+  ends sudo with "a password is required".
+- **Closing the dialog from the terminal.** sudo catches SIGINT and SIGTERM while
+  it authenticates (`init_signals()` in sudo's `src/signal.c`), so neither Ctrl-C
+  nor `kill` ends it while the dialog is open. With SIGTERM the dialog was seen to
+  stay open until it was approved. SIGKILL ends sudo, and authd then closes the
+  dialog ("Caller dismissed" in its log). This comes from sudo, so it applies to
+  Apple's `pam_tid.so` as well.
 
 ## Known limits
 
@@ -192,6 +248,9 @@ under "It only works inside `/usr/bin/sudo`".
   minutes per terminal. Commands run in that window show no dialog. Setting
   `Defaults timestamp_timeout=0` in sudoers makes every command prompt.
 - **Scripts.** `sudo ./script.sh` shows the script path, not its contents.
+- **No way out from the terminal.** While the dialog is open, Ctrl-C in the
+  terminal does nothing. The dialog has to be answered, or sudo killed with
+  SIGKILL from elsewhere. This is sudo's behaviour (see Verification).
 - **Private API.** The Touch ID availability check may stop working after a
   macOS update, in which case sudo falls back to the password prompt.
 - **Scope.** The module is for sudo only.

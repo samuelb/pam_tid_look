@@ -16,7 +16,14 @@ tidcmd_test: pam_tidcmd.m test.m
 test: tidcmd_test
 	./tidcmd_test
 
-clean:
-	rm -f pam_tidcmd.so tidcmd_test
+# Raises real authorization dialogs for a moment. See dialog_check.m.
+dialog_check: dialog_check.m
+	$(CC) $(CFLAGS) -o $@ $< -framework Foundation -framework CoreGraphics -framework Security
 
-.PHONY: all test clean
+dialog-check: dialog_check
+	./dialog_check
+
+clean:
+	rm -f pam_tidcmd.so tidcmd_test dialog_check
+
+.PHONY: all test dialog-check clean
