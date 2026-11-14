@@ -382,6 +382,11 @@ the fork (`process_args()`, `root_only()`, `acl_allows()`,
 - **Signing:** ad-hoc.
 - **Language:** Objective-C with ARC, because the work is Foundation string
   handling plus one Objective-C call into LocalAuthentication.
+- **Checks:** `make analyze` runs clang's static analyzer, and `make sanitize`
+  the prompt tests built with AddressSanitizer and UndefinedBehaviorSanitizer.
+  `make test` runs both (see Testing). The sanitized build is for the Mac it
+  runs on only: only that slice can run there, so other slices would test
+  nothing.
 
 ## Installation
 
@@ -451,6 +456,43 @@ as from the build directory. After `brew upgrade`, sudo keeps the copy it has
 until install is run again; `pam_tidcmd status` says when the two differ.
 `brew uninstall` leaves sudo as it is, and the installed copy of the script can
 still uninstall.
+
+The formula is published in the tap `samuelb/tap`, the repository
+`samuelb/homebrew-tap`, so it installs as `samuelb/tap/pam_tidcmd`. A release
+is a tag `vX.Y.Z` on `samuelb/pam_tidcmd`. Pushing one runs
+`.github/workflows/release.yml`:
+
+1. `make lint` and `make test` on the tagged commit, as CI runs them.
+2. `render_formula.sh` sets the formula's `url` to GitHub's archive of the tag
+   and `sha256` to that archive's checksum, downloaded as Homebrew downloads
+   it. The formula is then installed from a local tap, built from source, and
+   checked with `brew test`, `brew audit --strict` and `brew style`.
+3. The GitHub release, with notes generated from the commits.
+4. The formula is pushed to the tap as `Formula/pam_tidcmd.rb`, by the tap's
+   reusable publish workflow, which the releases of the tap's other formulae
+   use too.
+
+Each step runs only if the one before it passed, so a release that fails a
+test publishes nothing. The workflow does nothing in a copy of the repository,
+which could not push to the tap anyway.
+
+The formula in this repository is a valid formula with a stand-in `url` and
+`sha256`, not a template with markers, so `brew style` can check it as it is.
+`render_formula.sh` replaces exactly one `url` line and one `sha256` line of
+the form it expects, and stops otherwise: a formula changed in a way it does
+not know stops the release instead of going out half rendered. The release
+uses GitHub's archive of the tag rather than a tarball of its own, as most
+formulae do.
+
+The tap must be trusted before Homebrew loads a formula from it (`brew trust`),
+except for `brew install` given the full name. So the release trusts its local
+tap before `brew test` and `brew audit`.
+
+Pushing to the tap needs a token in the secret `HOMEBREW_TAP_TOKEN`: the run's
+own `GITHUB_TOKEN` can write only to this repository. The actions and the
+publish workflow are pinned to full commit SHAs, as the publish workflow pins
+its own. **Unverified:** the release has not run; it needs the published
+repository and the secret.
 
 ### Config changes
 
@@ -827,7 +869,36 @@ background job of a non-interactive shell starts with SIGINT and SIGQUIT
 ignored, and those cannot be trapped. Each signal handler is tested this way,
 as are two signals at once.
 
+`make test` starts with clang's static analyzer (`make analyze`) on every
+source file: the module, the probe, which the installer runs as root, and the
+two test programs. `-analyzer-werror` makes any finding fail. Then it builds
+the prompt tests with AddressSanitizer and UndefinedBehaviorSanitizer and runs
+them (`make sanitize`). Any finding ends the run and fails it, undefined
+behaviour too (`-fno-sanitize-recover`). That build uses the module's flags at
+`-O1` with frame pointers, as AddressSanitizer's documentation advises. Traces
+go through `/usr/bin/atos`. Both targets are modelled on the fork's `justfile`
+(MIT License, © 2026 Lauri Gates). A null pointer dereference, a read past the
+end of a heap block and a signed overflow, each put into a copy of
+`tidcmd_build_prompt()`, made them fail (2026-11-14).
+
+`render_formula_test.sh`, also run by `make test`, checks the release's
+`render_formula.sh`: it sets `url` and `sha256` and changes no other line, and
+it refuses a version that is not `X.Y.Z`, a checksum that is not 64 lowercase
+hex digits, a missing argument, and a formula with no or two `url` or `sha256`
+lines of the form it replaces. Without the script's version check or its
+check for one `url` line, or with `sha256` left as it was, the test fails.
+
 `make lint` runs shellcheck on the scripts.
+
+CI (`.github/workflows/ci.yml`) runs `make lint` and `make test` on GitHub's
+`macos-latest` runner for every push to `main` and every pull request. It
+never runs `make dialog-check`, which raises dialogs and runs sudo. On a
+runner, `tidcmd_test` is expected to skip the exception test, since the job
+has no GUI session, and to report Touch ID as not usable; neither fails it.
+Should a runner have a GUI session owned by its user, the exception test runs
+and still shows no dialog. `install_test.sh` runs as the runner's user, which
+is not root. **Unverified:** CI has not run; it needs the published
+repository.
 
 ## Verification
 
@@ -852,7 +923,9 @@ installed.
   | The same with 40 extra arguments | 577 |
 
   Looking at the dialog confirmed it: the Command, Directory and Requested by
-  lines each start a new line and are readable.
+  lines each start a new line and are readable. On 2026-11-14, with the build
+  of `d3843de`, which gives each label a line of its own, and started from
+  another app, the two sudo dialogs measured 417 and 625 points.
 - **Approving** with Touch ID: sudo exits 0.
 - **Cancelling:** sudo prints `Password:` on the terminal. Ctrl-C at that prompt
   ends sudo with "a password is required".
@@ -868,10 +941,19 @@ installed.
   first call and passing later ones on. With `timeout=2`, the module dismissed
   at 2.0 s (dropped) and again at 3.0 s, the dialog closed, the request
   returned `errAuthorizationDenied`, and the module logged the error once.
-- **Unverified: timeout of sudo's own dialog.** The Touch ID dialog for
-  `com.apple.security.sudo` is expected to close the same way, since the
-  dismissal acts on the request, not on the rule. This was not yet run with the
-  module installed: `make dialog-check` does it.
+- **Timeout of sudo's own dialog** (2026-11-14). The installed module was the
+  build of commit `d3843de` (its SHA-256 matched a new build of that commit),
+  with no `timeout=` on its line, so 30 seconds. `make dialog-check` started
+  `sudo -k /usr/bin/true` and left its Touch ID dialog for
+  `com.apple.security.sudo` alone. The dialog closed by itself 30.1 s after
+  sudo started, and sudo, with no terminal to ask for a password on, exited
+  with status 1. The log has a line from the module in sudo at 03:12:23.328,
+  authd's "Caller dismissed" 11 ms later, and then sudo's other PAM modules
+  (smart card, OpenDirectory) failing to get a password, as after Cancel.
+  `log show` could not render the module's text inside sudo
+  (`<compose failure [UUID]>`); the timing is that of "no answer after 30
+  seconds; dismissing the dialog". In the same run, the right of its own with
+  `timeout=3` closed after 3.1 s.
 - **Closing the dialog from the terminal.** sudo catches SIGINT and SIGTERM while
   it authenticates (`init_signals()` in sudo's `src/signal.c`), so neither Ctrl-C
   nor `kill` ends it while the dialog is open. With SIGTERM the dialog was seen to
@@ -926,6 +1008,13 @@ Checked on 2026-11-13, without root.
   kept that file as `.pam_tidcmd.so.broken`.
 - **Uninstall after a rescue** put back the original `pam_tid.so` line and
   removed the files, link included (2026-11-14).
+- **CI and the release, without a remote** (2026-11-14). actionlint 1.7.12,
+  with shellcheck on the `run:` steps, passes both workflows. `make lint` and
+  `make test` pass on a copy holding only the files a commit would. The
+  pinned SHAs are those of `actions/checkout` v7.0.1 and
+  `actions/upload-artifact` v7.0.2, and the tap's `publish.yml` at the pinned
+  commit takes the inputs the release passes. `brew style` passes the formula
+  and a copy rendered by `render_formula.sh`. Neither workflow has run.
 - **`rescue --force`** (2026-11-14). With the module installed and working,
   run as the user, it got root from the administrator dialog, found that sudo
   started as root, replaced the module with a link to

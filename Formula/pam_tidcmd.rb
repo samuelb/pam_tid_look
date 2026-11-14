@@ -1,6 +1,12 @@
-# Homebrew formula for pam_tidcmd. To publish it, copy it into the Formula
-# directory of a tap (a repository named homebrew-<name>) and set url and
-# sha256 to those of a release tarball.
+# Homebrew formula for pam_tidcmd, published in the tap samuelb/tap:
+#
+#   brew install samuelb/tap/pam_tidcmd
+#
+# The url and sha256 here stand in for a release's. For each tag vX.Y.Z, the
+# release workflow (.github/workflows/release.yml) sets them to that tag's
+# source archive with render_formula.sh and pushes the result to
+# https://github.com/samuelb/homebrew-tap. Edit the formula here: each release
+# overwrites the tap's copy.
 #
 # Homebrew only puts the files in place. `sudo pam_tidcmd install` then copies
 # the module to /Library/Security/pam_tidcmd, because PAM must never load a
@@ -9,10 +15,10 @@
 # starting.
 class PamTidcmd < Formula
   desc "Touch ID for sudo that shows the command in the dialog"
-  homepage "https://github.com/OWNER/pam_tidcmd"
-  url "https://github.com/OWNER/pam_tidcmd/archive/refs/tags/v0.1.0.tar.gz"
+  homepage "https://github.com/samuelb/pam_tidcmd"
+  url "https://github.com/samuelb/pam_tidcmd/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
-  head "https://github.com/OWNER/pam_tidcmd.git", branch: "main"
+  head "https://github.com/samuelb/pam_tidcmd.git", branch: "main"
 
   depends_on :macos
 
@@ -34,11 +40,14 @@ class PamTidcmd < Formula
     <<~EOS
       sudo is unchanged so far. To use the module for sudo, run:
         sudo #{opt_bin}/pam_tidcmd install
-      It asks you to approve a Touch ID dialog, and keeps the module only if that works.
+      It shows the change to /etc/pam.d/sudo_local and asks before it makes it;
+      --yes answers yes in advance. Then it asks you to approve a Touch ID
+      dialog, and keeps the module only if that works.
 
       Run the same command after `brew upgrade pam_tidcmd` to update the module sudo uses.
       Before `brew uninstall pam_tidcmd`, run:
         sudo #{opt_bin}/pam_tidcmd uninstall
+      It asks the same way.
 
       If sudo ever stops starting ("unable to initialize PAM"), run this, without sudo:
         /Library/Security/pam_tidcmd/pam_tidcmd rescue

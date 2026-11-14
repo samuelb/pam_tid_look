@@ -1,0 +1,124 @@
+name: Release
+
+# Pushing a tag vX.Y.Z releases that commit:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# 1. verify:  make lint and make test on the tagged commit, as CI runs them;
+# 2. formula: render the Homebrew formula for the tag's source archive
+#             (render_formula.sh), then install it from a local tap, built
+#             from source, and run its test, audit and style check;
+# 3. release: the GitHub release, with notes generated from the commits;
+# 4. publish: the formula goes to samuelb/homebrew-tap as
+#             Formula/pam_tidcmd.rb, through that repository's reusable
+#             publish workflow.
+#
+# Needs the secret HOMEBREW_TAP_TOKEN: a token that can push to
+# samuelb/homebrew-tap. This run's GITHUB_TOKEN cannot.
+#
+# Modelled on .github/workflows/release.yml in
+# https://github.com/samuelb/macos-sudo-touchid-context, which is under the MIT
+# License, Copyright (c) 2026 Lauri Gates. Actions and the publish workflow are
+# pinned to full commit SHAs, as the publish workflow pins its own.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify
+    # Only this repository publishes to samuelb/homebrew-tap.
+    if: github.repository == 'samuelb/pam_tidcmd'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install shellcheck
+        run: brew install shellcheck
+      - name: Lint
+        run: make lint
+      - name: Test
+        run: make test
+
+  formula:
+    name: Render and check the formula
+    needs: verify
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Render the formula
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/source.tar.gz" "$url"
+          sum="$(shasum -a 256 "$RUNNER_TEMP/source.tar.gz" | cut -d' ' -f1)"
+          echo "$url: sha256 $sum"
+          ./render_formula.sh "${TAG#v}" "$sum" rendered
+          grep -qxF "  url \"$url\"" rendered/Formula/pam_tidcmd.rb
+          cat rendered/Formula/pam_tidcmd.rb
+
+      # The formula as users get it: downloaded by url, checked against the
+      # checksum, built from source in Homebrew's environment, then tested.
+      # Homebrew loads a formula from a tap that is not official only once the
+      # tap is trusted, except for `brew install` with the full name.
+      - name: Install from a local tap and test
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
+        run: |
+          brew tap-new --no-git local/release-check
+          brew trust --tap local/release-check
+          cp rendered/Formula/pam_tidcmd.rb "$(brew --repo local/release-check)/Formula/"
+          brew install --build-from-source local/release-check/pam_tidcmd
+          brew test local/release-check/pam_tidcmd
+          brew audit --strict local/release-check/pam_tidcmd
+          brew style rendered/Formula/pam_tidcmd.rb
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: homebrew-tap-files
+          path: rendered/
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: formula
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$TAG"
+          fi
+
+  publish:
+    name: Publish to samuelb/homebrew-tap
+    needs: release
+    permissions:
+      contents: read
+    uses: samuelb/homebrew-tap/.github/workflows/publish.yml@f009c289e3674e0aee1c6f0ca4d93199cdc6b8cb # main, 2026-11-13
+    with:
+      artifact_name: homebrew-tap-files
+      commit_message: "pam_tidcmd ${{ github.ref_name }}"
+    secrets:
+      tap_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

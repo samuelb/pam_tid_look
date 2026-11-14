@@ -1,9 +1,18 @@
 CC      = xcrun clang
 WARN    = -Wall -Wextra -Wno-unused-parameter
 CFLAGS  = -fobjc-arc -O2 $(WARN) -fvisibility=hidden -mmacosx-version-min=14.0
+PROBE_CFLAGS = -O2 $(WARN) -mmacosx-version-min=14.0
 LIBS    = -framework Foundation -framework LocalAuthentication -framework Security -lpam -licucore
 # /usr/bin/sudo is arm64e on Apple silicon and x86_64 on Intel.
 ARCHS   = -arch arm64e -arch arm64 -arch x86_64
+# The sanitized test build. -O1 and frame pointers, as ASan's docs advise, for
+# readable traces; no -arch, so it is built for this Mac only. Traces go
+# through the system's atos, whatever llvm-symbolizer PATH may hold.
+# The analyze and sanitize recipes are modelled on those in the justfile of
+# https://github.com/samuelb/macos-sudo-touchid-context, which is under the MIT
+# License, Copyright (c) 2026 Lauri Gates.
+SANITIZE = -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined
+SANITIZE_ENV = ASAN_OPTIONS=external_symbolizer_path=/usr/bin/atos UBSAN_OPTIONS=print_stacktrace=1
 
 all: pam_tidcmd.so pam_tidcmd_probe
 
@@ -14,20 +23,36 @@ pam_tidcmd.so: pam_tidcmd.m
 # The installer's load check. Built for the module's architectures, so that on
 # Apple silicon it runs as arm64e and loads the slice sudo loads.
 pam_tidcmd_probe: pam_tidcmd_probe.c
-	$(CC) -O2 $(WARN) -mmacosx-version-min=14.0 $(ARCHS) -o $@ $< -lpam
+	$(CC) $(PROBE_CFLAGS) $(ARCHS) -o $@ $< -lpam
 	codesign --force --sign - $@
 
 tidcmd_test: pam_tidcmd.m test.m
 	$(CC) $(CFLAGS) -o $@ pam_tidcmd.m test.m $(LIBS)
 
+tidcmd_test_sanitized: pam_tidcmd.m test.m
+	$(CC) $(CFLAGS) $(SANITIZE) -o $@ pam_tidcmd.m test.m $(LIBS)
+
 # Shows no dialog and needs no root.
-test: tidcmd_test pam_tidcmd.so pam_tidcmd_probe
+test: analyze sanitize tidcmd_test pam_tidcmd.so pam_tidcmd_probe
 	./tidcmd_test
 	./pam_tidcmd_probe module ./pam_tidcmd.so
 	/bin/bash ./install_test.sh
+	/bin/bash ./render_formula_test.sh
+
+# Clang's static analyzer on every source file. Any finding fails.
+analyze:
+	$(CC) $(CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null pam_tidcmd.m
+	$(CC) $(PROBE_CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null pam_tidcmd_probe.c
+	$(CC) $(CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null test.m
+	$(CC) $(CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null dialog_check.m
+
+# The prompt tests again, built with AddressSanitizer and
+# UndefinedBehaviorSanitizer. Any finding ends the run and fails.
+sanitize: tidcmd_test_sanitized
+	$(SANITIZE_ENV) ./tidcmd_test_sanitized
 
 lint:
-	shellcheck -s bash pam_tidcmd.sh install_test.sh
+	shellcheck -s bash pam_tidcmd.sh install_test.sh render_formula.sh render_formula_test.sh
 
 # Raises real authorization dialogs for a moment. See dialog_check.m.
 dialog_check: dialog_check.m pam_tidcmd.m
@@ -37,6 +62,7 @@ dialog-check: dialog_check
 	./dialog_check
 
 clean:
-	rm -f pam_tidcmd.so pam_tidcmd_probe tidcmd_test dialog_check
+	rm -f pam_tidcmd.so pam_tidcmd_probe tidcmd_test tidcmd_test_sanitized dialog_check
+	rm -rf tidcmd_test_sanitized.dSYM
 
-.PHONY: all test lint dialog-check clean
+.PHONY: all test analyze sanitize lint dialog-check clean

@@ -1,0 +1,42 @@
+name: CI
+
+# make lint and make test on a macOS runner. Both need no root and show no
+# dialog.
+#
+# Never run make dialog-check here: it raises real authorization dialogs and
+# runs sudo. On a runner, tidcmd_test is expected to skip the exception test,
+# since the job has no GUI session, and to find Touch ID not usable;
+# install_test.sh runs as the runner's normal user, as it must.
+#
+# Modelled on .github/workflows/ci.yml in
+# https://github.com/samuelb/macos-sudo-touchid-context, which is under the MIT
+# License, Copyright (c) 2026 Lauri Gates. Actions are pinned to full commit
+# SHAs.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install shellcheck
+        run: brew install shellcheck
+      - name: Tools
+        run: |
+          sw_vers
+          xcrun clang --version
+          shellcheck --version
+      - name: Lint
+        run: make lint
+      - name: Test
+        run: make test

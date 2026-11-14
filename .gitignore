@@ -2,3 +2,5 @@ pam_tidcmd.so
 pam_tidcmd_probe
 tidcmd_test
 dialog_check
+tidcmd_test_sanitized
+tidcmd_test_sanitized.dSYM

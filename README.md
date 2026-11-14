@@ -27,7 +27,7 @@ way is in [DESIGN.md](DESIGN.md).
 With Homebrew:
 
 ```
-brew install OWNER/tap/pam_tidcmd
+brew install samuelb/tap/pam_tidcmd
 sudo "$(brew --prefix)/bin/pam_tidcmd" install
 ```
 
@@ -196,11 +196,29 @@ tested.
 
 ## Development
 
-`make test` needs no root and shows no dialog. It runs the prompt tests, loads
-the built module, and runs `install_test.sh`, which exercises install,
-uninstall and each rollback against a scratch directory. `make dialog-check`
-raises real dialogs; see `dialog_check.m`. `make lint` runs shellcheck.
+`make test` needs no root and shows no dialog. It runs clang's static analyzer
+on every source file, runs the prompt tests twice, built with AddressSanitizer
+and UndefinedBehaviorSanitizer and built as usual, loads the built module, runs
+`install_test.sh`, which exercises install, uninstall and each rollback against
+a scratch directory, and runs `render_formula_test.sh`. `make analyze` and
+`make sanitize` run the first two on their own. `make lint` runs shellcheck.
+`make dialog-check` raises real dialogs and runs sudo; see `dialog_check.m`.
 
-`Formula/pam_tidcmd.rb` is the Homebrew formula. To publish a release, tag it,
-copy the formula into the tap, and set `url` and `sha256` to the release
-tarball's, and the `OWNER` placeholders to the repository's.
+CI runs `make lint` and `make test` on a macOS runner for every push to `main`
+and every pull request (`.github/workflows/ci.yml`). It never runs
+`make dialog-check`.
+
+`Formula/pam_tidcmd.rb` is the Homebrew formula. Its `url` and `sha256` stand
+in for a release's. To release, push a tag:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` then runs the tests again, sets `url` and
+`sha256` to the tag's source archive with `render_formula.sh`, installs and
+tests that formula from a local tap, creates the GitHub release, and pushes the
+formula to [samuelb/homebrew-tap](https://github.com/samuelb/homebrew-tap).
+This needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may push to
+the tap.
