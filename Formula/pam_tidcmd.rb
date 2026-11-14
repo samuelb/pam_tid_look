@@ -18,6 +18,7 @@ class PamTidcmd < Formula
   homepage "https://github.com/samuelb/pam_tidcmd"
   url "https://github.com/samuelb/pam_tidcmd/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  license "MIT"
   head "https://github.com/samuelb/pam_tidcmd.git", branch: "main"
 
   depends_on :macos

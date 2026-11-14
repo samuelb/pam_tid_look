@@ -1062,3 +1062,19 @@ Checked on 2026-11-13, without root.
 - **Install and uninstall need permission to administer the computer** for the
   terminal app they run in, which macOS asks for the first time. `rescue` does
   without it, by not changing `/etc/pam.d`.
+
+## License
+
+pam_tidcmd is under the MIT License (LICENSE), chosen 2026-11-14.
+
+Apple's `pam_tid.c` is under the Apple Public Source License, which binds
+Apple's code and any file that contains part of it. `pam_tidcmd.m` follows the
+same sequence of calls, which Apple's API dictates, but is written
+independently. One statement was close to Apple's: the user lookup, with the
+same condition, variable names and message. It was rewritten on 2026-11-14 as
+two separate checks with messages of their own, so that no part of Apple's
+code is left in the file.
+
+Code ported from the fork macos-sudo-touchid-context is under the MIT License,
+© 2026 Lauri Gates. Each piece is marked in the source, and LICENSE carries
+that copyright line.

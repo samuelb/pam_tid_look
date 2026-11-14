@@ -1,6 +1,9 @@
 /*
  * pam_tidcmd: Touch ID for sudo, with the command shown in the dialog.
  *
+ * Copyright (c) 2026 Samuel Barabas. MIT License, see LICENSE. Functions
+ * ported from macos-sudo-touchid-context are marked where they are.
+ *
  * This follows the flow of Apple's pam_tid.so
  * (apple-oss-distributions/pam_modules, modules/pam_tid/pam_tid.c):
  * Authorization Services decides, for the right "com.apple.security.sudo",
@@ -852,12 +855,16 @@ OSStatus tidcmd_authorize(const char *rightName, const char *prompt, unsigned ti
 static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
     unsigned timeout = tidcmd_timeout(argc, argv);
 
+    /* The account sudo asks about, as PAM names it. */
     const char *user = NULL;
-    struct passwd pwdbuf, *pwd = NULL;
-    char pwdstore[4096];
-    if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !user ||
-        getpwnam_r(user, &pwdbuf, pwdstore, sizeof pwdstore, &pwd) != 0 || !pwd) {
-        os_log_error(tidcmd_log(), "unable to obtain the username");
+    if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !user) {
+        os_log_error(tidcmd_log(), "PAM gave no user name");
+        return PAM_AUTHINFO_UNAVAIL;
+    }
+    struct passwd entry, *account = NULL;
+    char storage[4096];
+    if (getpwnam_r(user, &entry, storage, sizeof storage, &account) != 0 || !account) {
+        os_log_error(tidcmd_log(), "no account entry for the PAM user");
         return PAM_AUTHINFO_UNAVAIL;
     }
 
@@ -873,8 +880,8 @@ static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
      * only vouches for that user. sudo can be asking about another one:
      * with targetpw or runaspw, or from a shell switched to another user.
      */
-    if (pwd->pw_uid != session.ai_auid) {
-        os_log(tidcmd_log(), "user %d is not the session owner %d", (int)pwd->pw_uid, (int)session.ai_auid);
+    if (account->pw_uid != session.ai_auid) {
+        os_log(tidcmd_log(), "user %d is not the session owner %d", (int)account->pw_uid, (int)session.ai_auid);
         return PAM_AUTH_ERR;
     }
 
@@ -884,13 +891,13 @@ static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
         return PAM_AUTHINFO_UNAVAIL;
     }
 
-    if (!tidcmd_touchid_usable(pwd->pw_uid)) {
+    if (!tidcmd_touchid_usable(account->pw_uid)) {
         return PAM_AUTH_ERR;
     }
 
     /* Read here, as root, which can read sudoers. */
     char **env = tidcmd_policy_uses_path("/etc/sudo.conf", "/etc/sudoers") ? tidcmd_exec_environment() : NULL;
-    const char *prompt = tidcmd_build_prompt(*_NSGetArgc(), *_NSGetArgv(), env, pwd->pw_dir).UTF8String;
+    const char *prompt = tidcmd_build_prompt(*_NSGetArgc(), *_NSGetArgv(), env, account->pw_dir).UTF8String;
     free(env);
     OSStatus status = tidcmd_authorize("com.apple.security.sudo", prompt, timeout);
     os_log_debug(tidcmd_log(), "authorization result: %d", (int)status);

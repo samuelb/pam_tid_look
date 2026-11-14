@@ -222,3 +222,9 @@ tests that formula from a local tap, creates the GitHub release, and pushes the
 formula to [samuelb/homebrew-tap](https://github.com/samuelb/homebrew-tap).
 This needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may push to
 the tap.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Some functions are ported from
+[macos-sudo-touchid-context](https://github.com/laurigates/macos-sudo-touchid-context)
+(MIT, © 2026 Lauri Gates) and are marked in the source.
