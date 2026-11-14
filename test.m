@@ -9,13 +9,23 @@ unsigned tidcmd_timeout(int argc, const char **argv);
 
 static int failures;
 
-/* Compares the first line of the prompt, ignoring the left-to-right marks between arguments. */
+/* The line after a label line, such as the command line after "Command:". */
+static NSString *section(NSString *prompt, NSString *label) {
+    NSArray<NSString *> *lines = [prompt componentsSeparatedByString:@"\n"];
+    NSUInteger i = [lines indexOfObject:label];
+    return i != NSNotFound && i + 1 < lines.count ? lines[i + 1] : @"(no such section)";
+}
+
+static NSString *command_of(NSString *prompt) {
+    return section(prompt, @"Command:");
+}
+
+/* Compares the command line, ignoring the left-to-right marks between arguments. */
 static void expect(NSString *label, NSString *prompt, NSString *wanted) {
-    NSString *firstLine = [[prompt componentsSeparatedByString:@"\n"].firstObject
-        stringByReplacingOccurrencesOfString:@"‎" withString:@""];
-    BOOL ok = [firstLine isEqualToString:wanted];
+    NSString *command = [command_of(prompt) stringByReplacingOccurrencesOfString:@"‎" withString:@""];
+    BOOL ok = [command isEqualToString:wanted];
     if (!ok) failures++;
-    printf("%s  %s\n      got:    %s\n", ok ? "ok  " : "FAIL", label.UTF8String, firstLine.UTF8String);
+    printf("%s  %s\n      got:    %s\n", ok ? "ok  " : "FAIL", label.UTF8String, command.UTF8String);
     if (!ok) printf("      wanted: %s\n", wanted.UTF8String);
 }
 
@@ -37,15 +47,11 @@ static char **exec_layout(int argc, char **argv) {
     return out;
 }
 
-static NSString *first_line(NSString *prompt) {
-    return [prompt componentsSeparatedByString:@"\n"].firstObject;
-}
-
 /* A command line of the form `sudo echo <arg>` whose argument is given as raw bytes. */
 static NSString *line_with_arg(NSData *arg, const char *home) {
     NSMutableData *bytes = [arg mutableCopy];
     [bytes appendBytes:"" length:1];
-    return first_line(tidcmd_build_prompt(3, exec_layout(3, (char *[]){"sudo", "echo", bytes.mutableBytes}), home));
+    return command_of(tidcmd_build_prompt(3, exec_layout(3, (char *[]){"sudo", "echo", bytes.mutableBytes}), home));
 }
 
 /* The timeout read from the given module options. */
@@ -63,29 +69,40 @@ int main(void) {
         const char *home = getpwuid(getuid())->pw_dir;
 
         expect(@"plain command", PROMPT("sudo", "brew", "services", "restart", "nginx"),
-            @"Command: sudo brew services restart nginx");
+            @"sudo brew services restart nginx");
         expect(@"sudo flags are kept", PROMPT("sudo", "-u", "postgres", "-E", "psql"),
-            @"Command: sudo -u postgres -E psql");
+            @"sudo -u postgres -E psql");
         expect(@"spaces and quotes", PROMPT("sudo", "sh", "-c", "echo 'hi there' > /etc/x"),
-            @"Command: sudo sh -c 'echo '\\''hi there'\\'' > /etc/x'");
-        expect(@"empty argument", PROMPT("sudo", "touch", ""), @"Command: sudo touch ''");
+            @"sudo sh -c 'echo '\\''hi there'\\'' > /etc/x'");
+        expect(@"empty argument", PROMPT("sudo", "touch", ""), @"sudo touch ''");
         expect(@"newline cannot start a fake line", PROMPT("sudo", "true", "a\nCommand: ls"),
-            @"Command: sudo true 'a\\u{A}Command: ls'");
+            @"sudo true 'a\\u{A}Command: ls'");
         expect(@"escape and bidi override are spelled out",
             PROMPT("sudo", "rm", "\x1b[2K", "safe‮gnp.sh"),
-            @"Command: sudo rm '\\u{1B}[2K' 'safe\\u{202E}gnp.sh'");
+            @"sudo rm '\\u{1B}[2K' 'safe\\u{202E}gnp.sh'");
         expect(@"ordinary unicode is left alone", PROMPT("sudo", "cat", "/tmp/Übersicht/日本.txt"),
-            @"Command: sudo cat '/tmp/Übersicht/日本.txt'");
+            @"sudo cat '/tmp/Übersicht/日本.txt'");
         expect(@"invalid UTF-8", PROMPT("sudo", "cat", "bad\xff\xfename"),
-            @"Command: sudo cat 'bad\\xFF\\xFEname'");
+            @"sudo cat 'bad\\xFF\\xFEname'");
         expect(@"invisible letters, marks and symbols are spelled out",
             PROMPT("sudo", "cat", "/etc/hosts\xEF\xB8\x8F", "\xE3\x85\xA4", "a\xCD\x8F" "b", "\xE2\xA0\x80"),
-            @"Command: sudo cat '/etc/hosts\\u{FE0F}' '\\u{3164}' 'a\\u{34F}b' '\\u{2800}'");
+            @"sudo cat '/etc/hosts\\u{FE0F}' '\\u{3164}' 'a\\u{34F}b' '\\u{2800}'");
         expect(@"argv[0] chosen by the caller is not shown", PROMPT("echo", "rm", "-rf", "/"),
-            @"Command: sudo rm -rf /");
-        expect(@"no arguments at all", tidcmd_build_prompt(0, (char *[]){NULL}, home), @"Command: sudo");
-        NSString *rtl = first_line(PROMPT("sudo", "cp", "א", "ב"));
-        check([rtl isEqualToString:@"Command: sudo‎ cp‎ 'א'‎ 'ב'"],
+            @"sudo rm -rf /");
+        expect(@"no arguments at all", tidcmd_build_prompt(0, (char *[]){NULL}, home), @"sudo");
+
+        NSArray<NSString *> *lines = [PROMPT("sudo", "true") componentsSeparatedByString:@"\n"];
+        NSArray<NSString *> *labels = @[@"Command:", @"sudo true", @"", @"Directory:", @"*", @"",
+            @"Requested by:", @"*", @"", @""]; /* "*": any text */
+        BOOL laidOut = lines.count == labels.count;
+        for (NSUInteger i = 0; laidOut && i < lines.count; i++) {
+            NSString *line = [lines[i] stringByReplacingOccurrencesOfString:@"‎" withString:@""];
+            laidOut = [labels[i] isEqualToString:@"*"] ? line.length > 0 : [line isEqualToString:labels[i]];
+        }
+        check(laidOut, @"each label on a line of its own, a blank line between sections",
+            [lines componentsJoinedByString:@" | "]);
+        NSString *rtl = command_of(PROMPT("sudo", "cp", "א", "ב"));
+        check([rtl isEqualToString:@"sudo‎ cp‎ 'א'‎ 'ב'"],
             @"arguments are separated by left-to-right marks", rtl);
 
         /* sudo splits --preserve-env=A,B in place with strtok_r() before PAM runs. */
@@ -93,13 +110,13 @@ int main(void) {
         char *last = NULL;
         for (char *t = strtok_r(cut[1] + strlen("--preserve-env="), ",", &last); t; t = strtok_r(NULL, ",", &last)) {}
         expect(@"arguments cut in place by sudo are shown whole", tidcmd_build_prompt(3, cut, home),
-            @"Command: sudo --preserve-env=TERM,,BASH_ENV bash");
+            @"sudo --preserve-env=TERM,,BASH_ENV bash");
 
         char longArg[2001];
         memset(longArg, 'A', 2000);
         longArg[2000] = '\0';
         NSString *longPrompt = PROMPT("sudo", "sh", "-c", longArg, "tail-marker");
-        NSString *longLine = [longPrompt componentsSeparatedByString:@"\n"].firstObject;
+        NSString *longLine = command_of(longPrompt);
         BOOL truncated = [longLine containsString:@"CHARACTERS NOT SHOWN"] &&
             [longLine hasSuffix:@"tail-marker"] && longLine.length < 450;
         if (!truncated) failures++;
@@ -144,7 +161,7 @@ int main(void) {
         BOOL entered = getcwd(saved, sizeof saved) &&
             [NSFileManager.defaultManager createDirectoryAtPath:deep withIntermediateDirectories:YES attributes:nil error:NULL] &&
             chdir(deep.fileSystemRepresentation) == 0;
-        NSString *dirLine = entered ? [PROMPT("sudo", "true") componentsSeparatedByString:@"\n"][1] : @"(could not enter the directory)";
+        NSString *dirLine = entered ? section(PROMPT("sudo", "true"), @"Directory:") : @"(could not enter the directory)";
         if (entered && chdir(saved) != 0) entered = NO;
         [NSFileManager.defaultManager removeItemAtPath:base error:NULL];
         check(entered && [dirLine containsString:@"CHARACTERS NOT SHOWN"] && dirLine.length < 260,

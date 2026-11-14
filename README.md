@@ -4,9 +4,14 @@ Touch ID for `sudo` on macOS, like Apple's `pam_tid.so`, with one difference:
 the dialog shows what you are approving.
 
 ```
-Command: sudo brew services restart nginx
-Directory: ~/code/myproject
-Requested by: zsh ← Terminal
+Command:
+sudo brew services restart nginx
+
+Directory:
+~/code/myproject
+
+Requested by:
+zsh ← Terminal
 ```
 
 Authentication is left to Apple, exactly as `pam_tid.so` does it. The module

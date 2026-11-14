@@ -257,8 +257,12 @@ static NSString *requesting_processes(void) {
     return names.count ? [names componentsJoinedByString:@" ← "] : @"(unknown)";
 }
 
+/*
+ * Each label has a line of its own, so that a long value starts at the left
+ * edge and wraps under itself, and a blank line separates the sections.
+ */
 NSString *tidcmd_build_prompt(int argc, char **argv, const char *home) {
-    return [NSString stringWithFormat:@"Command: %@\nDirectory: %@\nRequested by: %@\n\n",
+    return [NSString stringWithFormat:@"Command:\n%@\n\nDirectory:\n%@\n\nRequested by:\n%@\n\n",
         command_line(argc, argv),
         cut_middle(working_directory(home), kMaxContextLength, kDirectoryHead, kDirectoryTail),
         cut_middle(requesting_processes(), kMaxContextLength, kRequesterHead, kRequesterTail)];

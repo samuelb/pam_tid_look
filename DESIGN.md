@@ -176,19 +176,32 @@ nothing.
 ### Layout
 
 ```
-Command: sudo brew services restart nginx
-Directory: ~/code/myproject
-Requested by: zsh ← claude ← T3 Code (Beta)
+Command:
+sudo brew services restart nginx
+
+Directory:
+~/code/myproject
+
+Requested by:
+zsh ← claude ← T3 Code (Beta)
 ```
 
-Each line starts with a label so the text still reads correctly if the dialog
-collapses line breaks into spaces.
+Each label has a line of its own, so a long value starts at the left edge and
+wraps under itself, and a blank line separates the sections. The labels also
+keep the text readable if a dialog ever collapses line breaks into spaces.
 
-The dialog keeps the line breaks, so each label starts its own line. The dialog
-is 260 points wide, so long lines wrap and the dialog grows taller. A single
-400-character line makes it about twice as tall. The prompt ends with two
-newlines, but they do not show as a gap: the text runs straight into the
-dialog's next line.
+The dialog keeps line breaks and blank lines. On the dialog for a right of its
+own, each line of the prompt, blank or not, adds 16 points of height; a line
+holding only a space or a no-break space counts the same as an empty one
+(measured 2026-11-14). So this layout makes sudo's dialog about 80 points
+taller than the earlier one, which had label and value on one line and no
+blank lines. **Unverified:** how it looks in sudo's own dialog.
+
+The dialog is 260 points wide, so long lines wrap and the dialog grows taller.
+A single 400-character line makes it about twice as tall. The prompt ends with
+two newlines. On the dialog for a right of its own they add two lines of
+height, but in sudo's dialog they did not show as a gap: the text ran straight
+into the dialog's next line.
 
 ### Making the text safe to read
 
