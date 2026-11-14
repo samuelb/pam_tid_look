@@ -322,7 +322,6 @@ int main(int argc, char **argv) {
         char **evilFirst = ARGV(keep([NSString stringWithFormat:@"PATH=%@:/usr/bin:/bin", evil]));
         char **evilOnly = ARGV(keep([@"PATH=" stringByAppendingString:evil]));
 
-        /* Ported from the "PATH lookup" cases of the fork's tests/check-reasons.sh. */
         expect_hint(@"PATH lookup", PROMPT("sudo", "id", "-un"), @"/usr/bin/id");
         expect_hint(@"PATH lookup names the caller's copy", PROMPT_ENV(evilFirst, "sudo", "id", "-un"), evilId);
         expect(@"the command line stays as it was", PROMPT_ENV(evilFirst, "sudo", "id", "-un"), @"sudo id -un");
@@ -349,7 +348,7 @@ int main(int argc, char **argv) {
         expect_hint(@"no PATH: no hint", PROMPT_ENV(ARGV("HOME=/var/empty"), "sudo", "id"), @"(none)");
         expect_hint(@"no environment: no hint", PROMPT_ENV(NULL, "sudo", "id"), @"(none)");
 
-        /* Ported from the "two PATHs" cases: sudoers searches the last non-empty PATH=. */
+        /* Two PATHs: sudoers searches the last non-empty PATH=. */
         expect_hint(@"two PATHs: the last one is searched",
             PROMPT_ENV(ARGV("PATH=/usr/bin", evilOnly[0]), "sudo", "id"), evilId);
         expect_hint(@"an empty last PATH is skipped", PROMPT_ENV(ARGV(evilOnly[0], "PATH="), "sudo", "id"), evilId);

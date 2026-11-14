@@ -8,10 +8,6 @@
 # checksum. VERSION is X.Y.Z, without the v. Nothing else in the formula
 # changes. The release workflow (.github/workflows/release.yml) publishes DIR
 # to samuelb/homebrew-tap.
-#
-# Modelled on scripts/render-formula.sh in
-# https://github.com/samuelb/macos-sudo-touchid-context, which is under the MIT
-# License, Copyright (c) 2026 Lauri Gates.
 
 set -euo pipefail
 

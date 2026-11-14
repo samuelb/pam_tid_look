@@ -352,7 +352,6 @@ keep_backup() {
 # Deletes all but the newest BACKUPS_KEPT backups. Only names exactly as
 # keep_backup makes them, which sort by time: a file named otherwise is not
 # this script's to delete.
-# After prune_backups() in macos-sudo-touchid-context (MIT, © 2026 Lauri Gates).
 prune_backups() {
     local f found=() i=0
     for f in "$BACKUP".[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]; do

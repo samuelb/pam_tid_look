@@ -8,9 +8,6 @@ ARCHS   = -arch arm64e -arch arm64 -arch x86_64
 # The sanitized test build. -O1 and frame pointers, as ASan's docs advise, for
 # readable traces; no -arch, so it is built for this Mac only. Traces go
 # through the system's atos, whatever llvm-symbolizer PATH may hold.
-# The analyze and sanitize recipes are modelled on those in the justfile of
-# https://github.com/samuelb/macos-sudo-touchid-context, which is under the MIT
-# License, Copyright (c) 2026 Lauri Gates.
 SANITIZE = -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined
 SANITIZE_ENV = ASAN_OPTIONS=external_symbolizer_path=/usr/bin/atos UBSAN_OPTIONS=print_stacktrace=1
 

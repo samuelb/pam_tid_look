@@ -227,6 +227,6 @@ the tap.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Some functions are ported from
+MIT, see [LICENSE](LICENSE). Parts of the code and of the CI workflow follow
 [macos-sudo-touchid-context](https://github.com/laurigates/macos-sudo-touchid-context)
 (MIT, © 2026 Lauri Gates) and are marked in the source.

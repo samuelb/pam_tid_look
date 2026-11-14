@@ -2,7 +2,7 @@ MIT License
 
 Copyright (c) 2026 Samuel Barabas
 
-Portions ported from macos-sudo-touchid-context
+Portions taken from macos-sudo-touchid-context
 (https://github.com/laurigates/macos-sudo-touchid-context), marked as such in
 the source:
 Copyright (c) 2026 Lauri Gates

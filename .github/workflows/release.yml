@@ -16,10 +16,8 @@ name: Release
 # Needs the secret HOMEBREW_TAP_TOKEN: a token that can push to
 # samuelb/homebrew-tap. This run's GITHUB_TOKEN cannot.
 #
-# Modelled on .github/workflows/release.yml in
-# https://github.com/samuelb/macos-sudo-touchid-context, which is under the MIT
-# License, Copyright (c) 2026 Lauri Gates. Actions and the publish workflow are
-# pinned to full commit SHAs, as the publish workflow pins its own.
+# Actions and the publish workflow are pinned to full commit SHAs, as the
+# publish workflow pins its own.
 
 on:
   push:

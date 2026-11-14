@@ -367,10 +367,11 @@ read), with the home abbreviated to `~`. The section adds three lines to the
 dialog, four with the warning: about 48 or 64 points. **Unverified:** how it
 looks in sudo's own dialog.
 
-The environment reader, the file check and the sudoers check follow code from
-the fork (`process_args()`, `root_only()`, `acl_allows()`,
-`read_sudo_policy()`, `sudoers_mentions()`), which is under the MIT License,
-© 2026 Lauri Gates. Comments in `pam_tid_look.m` say where.
+How the environment reader walks KERN_PROCARGS2 up to argv follows
+`process_argv()` in
+[macos-sudo-touchid-context](https://github.com/laurigates/macos-sudo-touchid-context),
+which is under the MIT License, © 2026 Lauri Gates. A comment in
+`pam_tid_look.m` says where.
 
 ## Build
 
@@ -881,8 +882,7 @@ the prompt tests with AddressSanitizer and UndefinedBehaviorSanitizer and runs
 them (`make sanitize`). Any finding ends the run and fails it, undefined
 behaviour too (`-fno-sanitize-recover`). That build uses the module's flags at
 `-O1` with frame pointers, as AddressSanitizer's documentation advises. Traces
-go through `/usr/bin/atos`. Both targets are modelled on the fork's `justfile`
-(MIT License, © 2026 Lauri Gates). A null pointer dereference, a read past the
+go through `/usr/bin/atos`. A null pointer dereference, a read past the
 end of a heap block and a signed overflow, each put into a copy of
 `tid_look_build_prompt()`, made them fail (2026-11-14).
 
@@ -1080,6 +1080,7 @@ same condition, variable names and message. It was rewritten on 2026-11-14 as
 two separate checks with messages of their own, so that no part of Apple's
 code is left in the file.
 
-Code ported from the fork macos-sudo-touchid-context is under the MIT License,
-© 2026 Lauri Gates. Each piece is marked in the source, and LICENSE carries
-that copyright line.
+Code taken from macos-sudo-touchid-context
+(https://github.com/laurigates/macos-sudo-touchid-context) is under the MIT
+License, © 2026 Lauri Gates. Each piece is marked in the source, and LICENSE
+carries that copyright line.

@@ -1,8 +1,8 @@
 /*
  * pam_tid_look: Touch ID for sudo, with the command shown in the dialog.
  *
- * Copyright (c) 2026 Samuel Barabas. MIT License, see LICENSE. Functions
- * ported from macos-sudo-touchid-context are marked where they are.
+ * Copyright (c) 2026 Samuel Barabas. MIT License, see LICENSE. Code taken
+ * from macos-sudo-touchid-context by Lauri Gates is marked where it is.
  *
  * This follows the flow of Apple's pam_tid.so
  * (apple-oss-distributions/pam_modules, modules/pam_tid/pam_tid.c):
@@ -329,8 +329,6 @@ static NSString *working_directory(const char *home) {
 /*
  * sudo's short options, from parse_args() in sudo 1.9.17p2 as Apple ships it.
  * A letter followed by ':' takes a value, by "::" an optional one.
- * Taken from sudo_short_opts in the fork macos-sudo-touchid-context
- * (MIT License, Copyright (c) 2026 Lauri Gates).
  */
 static const char kSudoOptions[] = "Aa:BbC:c:D:Eeg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv";
 
@@ -454,8 +452,6 @@ static char *path_lookup(const char *word, const char *path) {
  * Whether an ACL entry of path itself (a symbolic link is not followed) allows
  * something, which may let someone other than its owner change it. An ACL that
  * cannot be read counts as one.
- * Ported from acl_allows() in the fork macos-sudo-touchid-context
- * (MIT License, Copyright (c) 2026 Lauri Gates).
  */
 static BOOL acl_allows(const char *path) {
     acl_t acl = acl_get_link_np(path, ACL_TYPE_EXTENDED);
@@ -480,8 +476,6 @@ static BOOL root_owned(const char *path, struct stat *st) {
  * directory on the way and the file itself, through symbolic links, pass
  * root_owned(). The rule of check_dirs() in pam_tid_look.sh. Anything that
  * cannot be checked fails.
- * Ported from root_only() in the fork macos-sudo-touchid-context
- * (MIT License, Copyright (c) 2026 Lauri Gates).
  */
 static BOOL root_only(const char *path) {
     char at[PATH_MAX] = "/";  /* absolute, without symbolic links, and checked */
@@ -562,7 +556,8 @@ static NSString *path_hint(int argc, char **argv, char **envp, const char *home)
  * the last one, which has no next one to measure against. Its pieces would
  * be read as environment strings; but sudo only cuts an option, an option is
  * last only when there is no command, and without one there is no hint.
- * Modelled on process_args() in the fork macos-sudo-touchid-context
+ * Reading KERN_PROCARGS2 up to argv follows process_argv() in
+ * https://github.com/laurigates/macos-sudo-touchid-context
  * (MIT License, Copyright (c) 2026 Lauri Gates).
  */
 char **tid_look_exec_environment(void) {
@@ -614,8 +609,6 @@ done:
  * path without %h, quotes or backslashes), or nesting more than 8 deep.
  * Looking for words rather than parsing sudoers errs one way only: a word
  * where it sets nothing still counts, and the hint is left out.
- * Ported from sudoers_mentions() in the fork macos-sudo-touchid-context
- * (MIT License, Copyright (c) 2026 Lauri Gates).
  */
 static BOOL sudoers_mentions(NSString *file, NSArray<NSString *> *words, NSMutableSet<NSString *> *found, int depth) {
     if (depth > 8) return NO;
@@ -677,8 +670,6 @@ static BOOL sudoers_mentions(NSString *file, NSArray<NSString *> *words, NSMutab
  * plugin, and sudoers and the files it includes mention neither secure_path,
  * which sudo would search instead, nor runas_default, which would run the
  * command as another user. Neither is set on macOS as it ships.
- * Ported from read_sudo_policy() in the fork macos-sudo-touchid-context
- * (MIT License, Copyright (c) 2026 Lauri Gates).
  */
 BOOL tid_look_policy_uses_path(const char *sudoConf, const char *sudoers) {
     struct stat st;

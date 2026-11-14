@@ -9,7 +9,7 @@ name: CI
 # install_test.sh runs as the runner's normal user, as it must.
 #
 # Modelled on .github/workflows/ci.yml in
-# https://github.com/samuelb/macos-sudo-touchid-context, which is under the MIT
+# https://github.com/laurigates/macos-sudo-touchid-context, which is under the MIT
 # License, Copyright (c) 2026 Lauri Gates. Actions are pinned to full commit
 # SHAs.
 
