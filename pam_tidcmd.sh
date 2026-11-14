@@ -2,8 +2,8 @@
 # Puts pam_tidcmd into sudo, takes it out again, and gets sudo back if the
 # module ever stops it from starting.
 #
-#   sudo pam_tidcmd install [--timeout SECONDS]
-#   sudo pam_tidcmd uninstall
+#   sudo pam_tidcmd install [--timeout SECONDS] [--yes]
+#   sudo pam_tidcmd uninstall [--yes]
 #   pam_tidcmd status
 #   pam_tidcmd rescue [--force]
 #
@@ -14,6 +14,12 @@
 # dialog for `sudo -S -k /usr/bin/true`. If a check fails, the dialog is
 # cancelled or not answered within two minutes, or the run is interrupted,
 # the previous files are put back.
+#
+# install and uninstall show the change to sudo_local, and install the
+# module's SHA-256 hash, then ask on the terminal before changing anything.
+# --yes answers yes in advance. Without a terminal and without --yes, they
+# refuse. The sudo_local they replace is kept in /etc/pam.d as
+# .sudo_local.pam_tidcmd-backup.<date-time>, the newest five.
 #
 # --timeout sets how long the Touch ID dialog waits for a fingerprint before
 # it closes and sudo asks for the password: 0 to 3600 seconds, 0 for no limit.
@@ -52,6 +58,11 @@ CONF=$PAM_DIR/sudo_local
 SUDO_POLICY=$PAM_DIR/sudo
 LOCK=/var/run/pam_tidcmd.lock
 OSASCRIPT=/usr/bin/osascript
+TTY=/dev/tty # where install and uninstall ask
+# Backups of sudo_local: this, a dot and the time (YYYYmmdd-HHMMSS). A dot
+# file, so that module_users() does not count one that names the module.
+BACKUP=$PAM_DIR/.sudo_local.pam_tidcmd-backup
+BACKUPS_KEPT=5
 TAG='#pam_tidcmd# '
 
 # Module fields ($3) naming Apple's module and this one. Brackets, not
@@ -82,8 +93,8 @@ die() {
 usage() {
     local me
     me=$(basename "$0")
-    warn "usage: sudo $me install [--timeout SECONDS]" \
-        "       sudo $me uninstall" \
+    warn "usage: sudo $me install [--timeout SECONDS] [--yes]" \
+        "       sudo $me uninstall [--yes]" \
         "       $me status" \
         "       $me rescue           when sudo no longer starts" \
         "       $me rescue --force   when sudo crashes or hangs while it authenticates you"
@@ -114,6 +125,54 @@ need_root() {
 # The same rule as the module: at most four digits, 3600 at most.
 valid_timeout() {
     [[ $1 =~ ^[0-9]{1,4}$ ]] && [ $((10#$1)) -le 3600 ]
+}
+
+timestamp() { date +%Y%m%d-%H%M%S; } # in the names of the files this script keeps
+
+# --- asking ------------------------------------------------------------------
+
+# install and uninstall ask before they change anything. The question goes to
+# the terminal rather than to stdin and stdout, which can be a pipe or a file,
+# so that the person at the terminal answers it. --yes answers it in advance.
+need_answer() {
+    [ "$yes" = 1 ] || { : <"$TTY"; } 2>/dev/null ||
+        die "There is no terminal to ask on, so nothing was changed." \
+            "Run this in a terminal, or add --yes to answer yes in advance."
+}
+
+confirm() { # asks $1 on the terminal; true for y or yes
+    local answer=
+    [ "$yes" = 0 ] || return 0
+    need_answer
+    printf '%s [y/N] ' "$1" >>"$TTY"
+    read -r answer <"$TTY" || printf '\n' >>"$TTY" # end of input: no
+    case $answer in
+    [yY] | [yY][eE][sS]) return 0 ;;
+    esac
+    return 1
+}
+
+# Shows how sudo_local changes, from $1 to $2; /dev/null stands for no file.
+show_change() {
+    local changes status=0
+    changes=$(/usr/bin/diff -u -L "$CONF (now)" -L "$CONF (new)" "$1" "$2") || status=$?
+    [ "$status" -le 1 ] || die "Could not compare the current and the new $CONF, so nothing was changed."
+    if [ -z "$changes" ]; then
+        say "" "$CONF stays as it is."
+    else
+        say "" "Changes to $CONF:" ""
+        printf '%s\n' "$changes" | sed 's/^/    /'
+    fi
+}
+
+# Whether sudo_local is as it was when copied to $1; /dev/null: there was none.
+# What was shown is then what gets written.
+conf_unchanged() {
+    if [ "$1" = /dev/null ]; then
+        [ ! -e "$CONF" ] && [ ! -L "$CONF" ]
+    else
+        [ -f "$CONF" ] && cmp -s "$1" "$CONF"
+    fi
 }
 
 # Files created by this run, removed when it ends.
@@ -271,6 +330,42 @@ module_users() {
     done
 }
 
+# Keeps saved_conf, the sudo_local this run replaced, as a backup, once the
+# change stays. Nothing is kept when the file did not change. The backup is a
+# hard link, which is not made over one that a run in the same second left:
+# that one shows the file as it had been for longer.
+keep_backup() {
+    { [ -n "${saved_conf:-}" ] && [ -f "$saved_conf" ]; } || return 0
+    if [ -f "$CONF" ] && cmp -s "$saved_conf" "$CONF"; then
+        return 0
+    fi
+    local name
+    name=$BACKUP.$(timestamp)
+    if ln "$saved_conf" "$name" 2>/dev/null; then
+        say "The previous $CONF is kept as $name."
+    elif ! exists "$name"; then
+        warn "Could not keep the previous $CONF as $name."
+    fi
+    prune_backups
+}
+
+# Deletes all but the newest BACKUPS_KEPT backups. Only names exactly as
+# keep_backup makes them, which sort by time: a file named otherwise is not
+# this script's to delete.
+# After prune_backups() in macos-sudo-touchid-context (MIT, © 2026 Lauri Gates).
+prune_backups() {
+    local f found=() i=0
+    for f in "$BACKUP".[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]; do
+        if [ -f "$f" ] && [ ! -L "$f" ]; then
+            found+=("$f")
+        fi
+    done
+    while [ $((${#found[@]} - i)) -gt "$BACKUPS_KEPT" ]; do
+        rm -f "${found[i]}"
+        i=$((i + 1))
+    done
+}
+
 # --- checks ------------------------------------------------------------------
 
 # The probe next to this script, or the installed one.
@@ -346,7 +441,7 @@ touchid_check() {
         return 1
     }
     add_temp "$out"
-    tty_state=$(stty -g </dev/tty 2>/dev/null) || tty_state=
+    tty_state=$(stty -g <"$TTY" 2>/dev/null) || tty_state=
     # shellcheck disable=SC2024 # root writes the output, as intended
     /usr/bin/sudo -n -u "$user" -- /usr/bin/sudo -S -k /usr/bin/true </dev/null >"$out" 2>&1 9>&- &
     check_pid=$!
@@ -360,7 +455,7 @@ touchid_check() {
     done
     wait "$check_pid" || status=$?
     check_pid=
-    [ -z "$tty_state" ] || stty "$tty_state" </dev/tty 2>/dev/null || true
+    [ -z "$tty_state" ] || stty "$tty_state" <"$TTY" 2>/dev/null || true
 
     [ "$status" = 0 ] && return 0
     if [ "$timed_out" = 1 ]; then
@@ -377,6 +472,26 @@ touchid_check() {
 # --- install -------------------------------------------------------------------
 
 FILES='pam_tidcmd.so pam_tidcmd_probe pam_tidcmd' # in DEST_DIR, the module first
+
+# Shows the module to install, $1, with its SHA-256 hash, and whether it
+# differs from the installed one.
+show_module() {
+    local sum
+    sum=$(/usr/bin/shasum -a 256 <"$1") ||
+        die "Could not compute the module's SHA-256 hash, so nothing was changed."
+    say "" "Module:     $MODULE" \
+        "            from $HERE/pam_tidcmd.so" \
+        "            SHA-256 ${sum%% *}"
+    if is_apple_module; then
+        say "            replaces Apple's pam_tid.so, which rescue put there"
+    elif [ ! -f "$MODULE" ]; then
+        say "            not installed yet"
+    elif cmp -s "$1" "$MODULE"; then
+        say "            the same as the installed module"
+    else
+        say "            differs from the installed module"
+    fi
+}
 
 undo_install() {
     local name failed=0
@@ -423,6 +538,7 @@ do_install() {
     if [ -z "$user" ] || [ "$user" = root ]; then
         die "Run this with sudo from your own account: the last check asks that account to approve a Touch ID dialog."
     fi
+    need_answer # now rather than after the checks
     check_dirs
     take_lock
 
@@ -475,9 +591,23 @@ do_install() {
     PROBE_BIN=$staged/pam_tidcmd_probe
     probe_error=$("$PROBE_BIN" module "$staged/pam_tidcmd.so" 2>&1) ||
         die "The module does not load, so nothing was changed:" "$probe_error"
+    local shown=/dev/null # sudo_local as checked and shown
+    if [ -f "$CONF" ]; then
+        shown=$staged/sudo_local.shown
+        cp -p "$CONF" "$shown"
+    fi
     policy_loads with_tidcmd "$staged/pam_tidcmd.so" ||
         die "PAM could not load $CONF with the module in it ($probe_error), so nothing was changed." \
             "A line in it may name a module that does not load."
+
+    # Show what changes, and ask.
+    with_tidcmd "$MODULE" >"$staged/sudo_local.new"
+    show_module "$staged/pam_tidcmd.so"
+    show_change "$shown" "$staged/sudo_local.new"
+    say ""
+    confirm "Install pam_tidcmd?" || die "Nothing was changed."
+    conf_unchanged "$shown" ||
+        die "$CONF changed while you were asked, so nothing was changed. Run install again to see the new change."
 
     # Keep what is there now. The old files are kept as hard links, so a
     # reinstall over a working module can be undone after the new one has
@@ -519,6 +649,7 @@ do_install() {
         rm -f "$DEST_DIR/.$name.previous"
     done
     rm -f "$BROKEN"
+    keep_backup
 
     local closes
     if [ "${timeout:-$DEFAULT_TIMEOUT}" = 0 ]; then
@@ -553,14 +684,32 @@ remove_from_conf() {
     add_temp "$cleaned"
     without_tidcmd "$saved_conf" >"$cleaned"
 
-    # First choice: sudo_local as it was before install, with pam_tid.so.
-    # An interrupted run puts back what was there only if sudo started with
-    # it; otherwise anything tried here is at least as good.
-    local reason cleaned_loads=1
+    local reason cleaned_loads=1 kept="sudo starts with the module, so $CONF was left as it was and the module was kept."
     if [ -n "$PROBE_BIN" ] && ! policy_loads cat "$cleaned"; then
         cleaned_loads=0
         reason="PAM could not load $CONF without the module ($probe_error)."
+        [ "$before" = failed ] || die "$reason" "$kept"
+    fi
+
+    # Show what changes, and ask.
+    local default="macOS's default: the password, without Touch ID."
+    if [ "$cleaned_loads" = 1 ]; then
+        show_change "$saved_conf" "$cleaned"
+        [ "$before" = ok ] || say "" "sudo does not start now. $sudo_error" \
+            "If it does not start with this change either, $CONF is set aside, so that sudo uses $default"
     else
+        say "" "$reason" "sudo does not start with the module either. $sudo_error" \
+            "So $CONF is set aside, without the module, and sudo uses $default"
+    fi
+    say "" "Then the module's files in $DEST_DIR are removed, unless a file in $PAM_DIR still uses it." ""
+    confirm "Uninstall pam_tidcmd?" || die "Nothing was changed."
+    conf_unchanged "$saved_conf" ||
+        die "$CONF changed while you were asked, so nothing was changed. Run uninstall again to see the new change."
+
+    # First choice: sudo_local as it was before install, with pam_tid.so.
+    # An interrupted run puts back what was there only if sudo started with
+    # it; otherwise anything tried here is at least as good.
+    if [ "$cleaned_loads" = 1 ]; then
         [ "$before" = failed ] || pending=undo_uninstall
         write_conf cat "$cleaned"
         if sudo_starts; then
@@ -573,15 +722,13 @@ remove_from_conf() {
         if [ "$before" = ok ]; then
             write_conf cat "$saved_conf"
             pending=
+            die "$reason" "$kept"
         fi
-    fi
-    if [ "$before" = ok ]; then
-        die "$reason" "sudo starts with the module, so $CONF was left as it was and the module was kept."
     fi
 
     # sudo does not start either way. Second choice: no sudo_local, which is
     # how macOS comes. The rest of it is kept aside, for you to fix.
-    aside=$CONF.pam_tidcmd-disabled.$(date +%Y%m%d-%H%M%S)
+    aside=$CONF.pam_tidcmd-disabled.$(timestamp)
     cp -p "$cleaned" "$aside"
     chmod 444 "$aside"
     rm -f "$CONF"
@@ -611,9 +758,14 @@ do_uninstall() {
 
     if uses_tidcmd; then
         check_pam_dir
-        remove_from_conf
+        remove_from_conf # asks first
+        keep_backup
     else
         say "$CONF does not use pam_tidcmd."
+        if [ -d "$DEST_DIR" ] && [ -z "$(module_users)" ]; then
+            say "" "Uninstall removes the module's files in $DEST_DIR." ""
+            confirm "Remove them?" || die "Nothing was changed."
+        fi
     fi
 
     local users
@@ -803,6 +955,7 @@ main() {
     timeout=
     timeout_given=0
     force=0
+    yes=0
     while [ $# -gt 0 ]; do
         case $1 in
         install | uninstall | status | rescue)
@@ -810,6 +963,7 @@ main() {
             action=$1
             ;;
         --force) force=1 ;;
+        --yes) yes=1 ;;
         --timeout)
             [ $# -ge 2 ] || usage
             timeout=$2
@@ -832,6 +986,9 @@ main() {
         timeout=$((10#$timeout))
     fi
     [ "$force" = 0 ] || [ "$action" = rescue ] || die "--force is only for rescue."
+    # rescue never asks: it runs as root from a dialog, without a terminal.
+    [ "$yes" = 0 ] || [ "$action" = install ] || [ "$action" = uninstall ] ||
+        die "--yes is only for install and uninstall, which ask before they change anything."
 
     trap finish EXIT
     trap 'on_signal 129' HUP

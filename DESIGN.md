@@ -481,8 +481,8 @@ because one replacement line cannot keep the meaning of several.
 The new config is written to a temporary file and renamed into place only if
 it was produced without error, so a failure cannot leave a partial file.
 
-Only one install or uninstall runs at a time, so that a run keeps its backups
-until it is done. The lock is a `flock` on `/var/run/pam_tidcmd.lock`, taken
+Only one install or uninstall runs at a time, so that a run keeps its saved
+copies until it is done. The lock is a `flock` on `/var/run/pam_tidcmd.lock`, taken
 with `lockf(1)` on a descriptor the script holds. The kernel releases it when
 the process ends, so a killed run cannot leave a stale lock to be removed by
 hand. Only root may open the lock file: `flock()` also works on a descriptor
@@ -509,6 +509,42 @@ Two checks are used before and after a change:
   a module cannot be loaded. It also catches anything else that keeps sudo
   from running a command.
 
+### Asking before a change
+
+Install and uninstall show what they will change and ask `[y/N]` before they
+change anything. Both show a `diff -u` of the current and the new
+`sudo_local`. Install also shows the SHA-256 hash of the module it is about to
+install, taken from the copy that will be moved into place rather than from the
+build, which could change meanwhile, and says whether that module differs from
+the installed one. The hash can be compared with a published one.
+
+Install asks after checks 1 to 3 (see Install), so that you are not asked about
+a change those checks would refuse, and before it saves the current files or
+moves anything into place. Uninstall asks before its first write, once it knows
+whether it will have to set `sudo_local` aside, and says so. When `sudo_local`
+does not use the module, it asks before deleting the files that are left.
+
+The question goes to the terminal, `/dev/tty`, and the answer is read from
+there. stdin and stdout can be a pipe or a file, and the answer should come from
+the person at the terminal, not from whatever feeds the script. `y` and `yes`,
+in either case, mean yes; anything else, an empty line or the end of input
+means no. `--yes` answers in advance, for scripts. Without a terminal and
+without `--yes`, install refuses at once, before its checks, and uninstall
+refuses when it reaches the question. Either way nothing has been changed.
+
+What is written is what was shown. Install copies `sudo_local` before check 3,
+and uninstall before it builds the new file. If `sudo_local` no longer matches
+that copy after the answer, the run stops without changing anything.
+
+`rescue` never asks. It runs as root from an administrator dialog, which has no
+terminal, and it is for when sudo is already broken. `--yes` is refused with
+`rescue` and `status`.
+
+**Unverified:** the question through the real sudo. It was answered on a pty
+made by `script(1)`, also with stdin and stdout redirected, and refused in a
+session without a controlling terminal (2026-11-14). sudo runs the command on
+a pty of its own by default (`use_pty`), which `/dev/tty` should then be.
+
 ### Install
 
 Before changing anything, install requires that:
@@ -520,7 +556,8 @@ Before changing anything, install requires that:
 3. PAM can load the new `sudo_local`, written with the module at that
    temporary path.
 
-Then it keeps the current `sudo_local` and the current files (as hard links, so
+Then it shows the change and asks (see Asking before a change). If you agree,
+it keeps the current `sudo_local` and the current files (as hard links, so
 a reinstall over a working module can be undone after the new one has taken its
 place), moves the new files into place and writes `sudo_local`. Afterwards it
 requires that:
@@ -584,6 +621,10 @@ leaves sudo starting:
    module, unless PAM could not load that either: then it stays aside, so that
    sudo starts once the other cause is fixed. Uninstall reports the failure.
 
+Before the first of these is written, uninstall shows it and asks (see Asking
+before a change). When sudo starts with the module and the probe already
+refuses the first way, it fails without asking, since it changes nothing.
+
 An interrupted uninstall puts the old `sudo_local` back only if sudo started
 with it. When sudo did not start to begin with, whatever the run has written
 is at least as good, so it stays.
@@ -593,6 +634,40 @@ not while any file in `/etc/pam.d` still has an active line of any kind naming
 it, `sudo_local` included (uninstall removes only `auth` lines), since PAM
 could then no longer load that file. `uninstall` needs no files from the build or from Homebrew, so
 the installed copy can run it.
+
+### Backups
+
+When install or uninstall has changed `sudo_local` for good, the file it
+replaced is kept as `/etc/pam.d/.sudo_local.pam_tidcmd-backup.<date-time>`,
+with the original's owner and mode. A run that is undone, or that leaves the
+file as it was, keeps none. The newest five are kept. Older ones are deleted,
+but only regular files named exactly as the script names them, with
+`<date-time>` as `YYYYmmdd-HHMMSS`, which sorts by time. A file renamed by
+hand, or a link, is not the script's to delete.
+
+The backup is the copy the run took before the change, linked under the new
+name. The link is not made over an existing file, so of two runs in the same
+second, the first one's backup is kept: it shows the file as it had been for
+longer.
+
+Where they are kept:
+
+- In `/etc/pam.d`, next to `sudo_local`, so that they are found where it is,
+  also from macOS Recovery, and survive an uninstall. The directory is
+  root's, like `sudo_local`.
+- As dot files. Uninstall keeps the module's files while any file in
+  `/etc/pam.d` has an active line naming the module, and a backup taken while
+  the module was installed has one, so every later uninstall would keep them.
+  That scan skips dot files. OpenPAM opens a policy only by its service name,
+  so it never reads a backup either.
+- Not in `/Library/Security/pam_tidcmd`: uninstall removes that directory.
+
+Putting one back needs a process that may write to `/etc/pam.d`: sudo, or the
+Terminal of macOS Recovery, on the Data volume. A root shell from `su`, in a
+terminal app that may administer the computer, should do as well
+(**Unverified**). The administrator dialog that `rescue` uses cannot (see the
+next section). A backup taken while the module was installed names it, so it
+stops sudo from starting if put back once the module is gone.
 
 ### macOS protects `/etc/pam.d`
 
@@ -729,7 +804,12 @@ that is missing or contains the word `BROKEN`; the fake sudo starts when the fak
 the real one does. It covers each rollback and each uninstall fallback above, a
 reinstall that fails and keeps the previous module, an install interrupted
 during the Touch ID check, and the lock. Breaking the rollback, a fallback or
-the check before uninstalling makes it fail.
+the check before uninstalling makes it fail. A file stands in for the
+terminal and holds the answer: it tests yes, no, no answer, `--yes`, no
+terminal, a `sudo_local` changed while the question is open and a run
+interrupted there. For backups, it checks one per change that stays, none for
+one undone, the newest five, files it did not name left alone, and that
+uninstall still removes the module while backups name it.
 
 `install_test.sh` also runs the real Touch ID check with a fake command in
 place of sudo: approved, cancelled, ended by a signal, and unanswered, where it
