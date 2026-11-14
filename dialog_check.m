@@ -19,7 +19,7 @@
  * itself:
  *
  *   right  The same undefined right, requested through the module's own
- *          tidcmd_authorize() with timeout=3.
+ *          tid_look_authorize() with timeout=3.
  *   sudo   `sudo -k /usr/bin/true` with the timeout set in sudo_local. It is
  *          skipped when that is 0 (no timeout) or over 60 seconds.
  *
@@ -44,11 +44,11 @@
 
 extern char **environ;
 
-/* From pam_tidcmd.m, which is linked in. */
-unsigned tidcmd_timeout(int argc, const char **argv);
-OSStatus tidcmd_authorize(const char *rightName, const char *prompt, unsigned timeout);
+/* From pam_tid_look.m, which is linked in. */
+unsigned tid_look_timeout(int argc, const char **argv);
+OSStatus tid_look_authorize(const char *rightName, const char *prompt, unsigned timeout);
 
-static const char *kProbeRight = "com.github.pam-tidcmd.dialog-check";
+static const char *kProbeRight = "com.github.pam-tid-look.dialog-check";
 static const unsigned kProbeTimeout = 3;
 static const unsigned kMaxSudoTimeout = 60; /* longer configured timeouts are not waited for */
 
@@ -80,7 +80,7 @@ static int request_right(const char *prompt) {
  * dismissed one does (errAuthorizationDenied).
  */
 static int authorize_like_module(const char *option, const char *prompt) {
-    OSStatus status = tidcmd_authorize(kProbeRight, prompt, tidcmd_timeout(1, &option));
+    OSStatus status = tid_look_authorize(kProbeRight, prompt, tid_look_timeout(1, &option));
     return status == errAuthorizationDenied ? 0 : 1;
 }
 
@@ -298,8 +298,8 @@ static int closes_by_itself(NSString *label, char *const argv[], unsigned timeou
 }
 
 /*
- * The options on the active pam_tidcmd line in sudo_local, or nil if there is
- * none. OpenPAM ends a line at the first #, even inside a word.
+ * The options on the active pam_tid_look line in sudo_local, or nil if there
+ * is none. OpenPAM ends a line at the first #, even inside a word.
  */
 static NSArray<NSString *> *module_options(void) {
     NSString *conf = [NSString stringWithContentsOfFile:@"/etc/pam.d/sudo_local" encoding:NSUTF8StringEncoding error:NULL];
@@ -309,7 +309,7 @@ static NSArray<NSString *> *module_options(void) {
         NSArray<NSString *> *fields = [[active componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet]
             filteredArrayUsingPredicate:nonEmpty];
         if (fields.count >= 3 && [fields[0] isEqualToString:@"auth"] &&
-            ([fields[2] isEqualToString:@"pam_tidcmd.so"] || [fields[2] hasSuffix:@"/pam_tidcmd.so"])) {
+            ([fields[2] isEqualToString:@"pam_tid_look.so"] || [fields[2] hasSuffix:@"/pam_tid_look.so"])) {
             return [fields subarrayWithRange:NSMakeRange(3, fields.count - 3)];
         }
     }
@@ -321,7 +321,7 @@ static unsigned configured_timeout(NSArray<NSString *> *options) {
     const char *argv[options.count + 1];
     for (NSUInteger i = 0; i < options.count; i++) argv[i] = options[i].UTF8String;
     argv[options.count] = NULL;
-    return tidcmd_timeout((int)options.count, argv);
+    return tid_look_timeout((int)options.count, argv);
 }
 
 /* Prints the verdict for one pair of measurements. */
@@ -387,10 +387,10 @@ int main(int argc, char **argv) {
         }
         result = worse(result, closed);
 
-        printf("sudo with pam_tidcmd:\n");
+        printf("sudo with pam_tid_look:\n");
         NSArray<NSString *> *options = module_options();
         if (!options) {
-            printf("  -> skipped: pam_tidcmd is not active in /etc/pam.d/sudo_local\n");
+            printf("  -> skipped: pam_tid_look is not active in /etc/pam.d/sudo_local\n");
             return result;
         }
         CGFloat shortCommand = dialog_height(@"sudo -k /usr/bin/true",

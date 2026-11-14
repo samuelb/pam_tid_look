@@ -1,8 +1,8 @@
 #!/bin/bash
-# Runs install and uninstall from pam_tidcmd.sh, with their checks and
+# Runs install and uninstall from pam_tid_look.sh, with their checks and
 # rollbacks, against a scratch directory and without root. Shows no dialog.
 #
-# pam_tidcmd.sh is sourced and these are replaced: the paths, the root and
+# pam_tid_look.sh is sourced and these are replaced: the paths, the root and
 # ownership steps, the probe, sudo and the Touch ID check. The fake probe
 # follows a policy's includes, cuts each line at the first # as OpenPAM does,
 # and fails on a module that is missing or holds the word BROKEN, or on a
@@ -21,7 +21,7 @@ if [ "$(id -u)" -eq 0 ]; then
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
-work=$(mktemp -d "${TMPDIR:-/tmp}/pam_tidcmd_test.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/pam_tid_look_test.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 W=$work/w
 failures=0
@@ -54,21 +54,21 @@ esac || {
 EOF
 
 cat >"$work/stubs" <<'EOF'
-DEST_DIR=$W/Security/pam_tidcmd
-MODULE=$DEST_DIR/pam_tidcmd.so
-PROBE=$DEST_DIR/pam_tidcmd_probe
-SCRIPT=$DEST_DIR/pam_tidcmd
-BROKEN=$DEST_DIR/.pam_tidcmd.so.broken
+DEST_DIR=$W/Security/pam_tid_look
+MODULE=$DEST_DIR/pam_tid_look.so
+PROBE=$DEST_DIR/pam_tid_look_probe
+SCRIPT=$DEST_DIR/pam_tid_look
+BROKEN=$DEST_DIR/.pam_tid_look.so.broken
 PAM_DIR=$W/pam.d
 CONF=$PAM_DIR/sudo_local
 SUDO_POLICY=$PAM_DIR/sudo
 LOCK=$W/lock
 HERE=$W/build
-SELF=$HERE/pam_tidcmd
+SELF=$HERE/pam_tid_look
 SUDO_USER=tester
 APPLE_TID=$W/apple/pam_tid.so.2
 TTY=$W/tty
-BACKUP=$PAM_DIR/.sudo_local.pam_tidcmd-backup
+BACKUP=$PAM_DIR/.sudo_local.pam_tid_look-backup
 running_as_root() { [ -n "${FAKE_ROOT:-}" ]; }
 # FAKE_TIME: the time in the names of the files the script keeps.
 if [ -n "${FAKE_TIME:-}" ]; then timestamp() { echo "$FAKE_TIME"; }; fi
@@ -102,12 +102,12 @@ mv() { # FAKE_MV=fail: putting the saved sudo_local back fails
 }
 sudo_starts() {
     # FAKE_HANG=cleaned: hangs once sudo_local no longer names the module
-    if [ "${FAKE_HANG:-}" = cleaned ] && ! grep -q 'pam_tidcmd[.]so' "$CONF" 2>/dev/null; then
+    if [ "${FAKE_HANG:-}" = cleaned ] && ! grep -q 'pam_tid_look[.]so' "$CONF" 2>/dev/null; then
         sleep 30 &
         echo "$$ $!" >"$W/waiting"
         wait $!
     fi
-    if [ "${FAKE_SUDO:-}" = broken ] || ! "$W/build/pam_tidcmd_probe" policy "$SUDO_POLICY" 2>/dev/null; then
+    if [ "${FAKE_SUDO:-}" = broken ] || ! "$W/build/pam_tid_look_probe" policy "$SUDO_POLICY" 2>/dev/null; then
         sudo_error="fake sudo: unable to initialize PAM"
         return 1
     fi
@@ -130,7 +130,7 @@ if [ -n "${FAKE_BREAK_AFTER:-}" ]; then
     eval "real_$(declare -f write_conf)"
     write_conf() {
         real_write_conf "$@" || return 1
-        [ "$1" != with_tidcmd ] || { chmod u+w "$MODULE"; echo BROKEN >>"$MODULE"; }
+        [ "$1" != with_tid_look ] || { chmod u+w "$MODULE"; echo BROKEN >>"$MODULE"; }
     }
 fi
 EOF
@@ -140,27 +140,27 @@ HEAD='# sudo_local: local config file which survives system update and is includ
 APPLE="$HEAD
 auth       sufficient     pam_tid.so"
 INSTALLED="$HEAD
-auth       sufficient     $W/Security/pam_tidcmd/pam_tidcmd.so
-#pam_tidcmd# auth       sufficient     pam_tid.so"
+auth       sufficient     $W/Security/pam_tid_look/pam_tid_look.so
+#pam_tid_look# auth       sufficient     pam_tid.so"
 
 # A fresh world: a build directory with module v1, and Apple's sudo_local.
 setup() {
     rm -rf "$W"
     mkdir -p "$W/build" "$W/pam.d" "$W/Security" "$W/apple"
     echo "apple pam_tid" >"$W/apple/pam_tid.so.2"
-    echo "module v1" >"$W/build/pam_tidcmd.so"
-    cp "$work/probe" "$W/build/pam_tidcmd_probe"
-    cp "$here/pam_tidcmd.sh" "$W/build/pam_tidcmd"
-    chmod 755 "$W/build/pam_tidcmd_probe" "$W/build/pam_tidcmd"
+    echo "module v1" >"$W/build/pam_tid_look.so"
+    cp "$work/probe" "$W/build/pam_tid_look_probe"
+    cp "$here/pam_tid_look.sh" "$W/build/pam_tid_look"
+    chmod 755 "$W/build/pam_tid_look_probe" "$W/build/pam_tid_look"
     echo "auth       include        sudo_local" >"$W/pam.d/sudo"
     echo "$APPLE" >"$W/pam.d/sudo_local"
     echo y >"$W/tty"
 }
 
-# Runs pam_tidcmd with the stubs, in a bash of its own as the real one would
+# Runs pam_tid_look with the stubs, in a bash of its own as the real one would
 # be. Sets out and status.
 cat >"$work/driver" <<EOF
-source "$here/pam_tidcmd.sh"
+source "$here/pam_tid_look.sh"
 source "$work/stubs"
 main "\$@"
 EOF
@@ -208,7 +208,7 @@ check() { # label, then a command that must succeed
 
 conf_is() { [ "$(cat "$W/pam.d/sudo_local")" = "$1" ]; }
 no_leftovers() { # backups are not left over
-    [ -z "$(find "$W/pam.d" -name 'pam_tidcmd-check.*' -o -name '.sudo_local.*' ! -name '.sudo_local.pam_tidcmd-backup.*')" ] &&
+    [ -z "$(find "$W/pam.d" -name 'pam_tid_look-check.*' -o -name '.sudo_local.*' ! -name '.sudo_local.pam_tid_look-backup.*')" ] &&
         [ -z "$(find "$W/Security" -name '.staged.*' -o -name '.*.previous')" ]
 }
 set_conf() { # replaces sudo_local
@@ -222,20 +222,20 @@ add_line() { # appends a line to sudo_local
     chmod 444 "$W/pam.d/sudo_local"
 }
 break_module() {
-    chmod u+w "$W/Security/pam_tidcmd/pam_tidcmd.so"
-    echo "BROKEN" >>"$W/Security/pam_tidcmd/pam_tidcmd.so"
+    chmod u+w "$W/Security/pam_tid_look/pam_tid_look.so"
+    echo "BROKEN" >>"$W/Security/pam_tid_look/pam_tid_look.so"
 }
-gone() { [ ! -e "$W/Security/pam_tidcmd" ]; }
+gone() { [ ! -e "$W/Security/pam_tid_look" ]; }
 said() { [[ $out == *"$1"* ]]; }
 
 echo "== the stubs replace every system path"
 # Every top-level path in the script must point into the scratch directory, or
 # a test could change the real system. Stop before any test if one does not.
 # shellcheck disable=SC2013,SC2016 # one name per line; the sed expression is literal
-for v in $(sed -n -E 's/^([A-Z_]+)=(\/|\$DEST_DIR|\$PAM_DIR).*/\1/p' "$here/pam_tidcmd.sh"); do
+for v in $(sed -n -E 's/^([A-Z_]+)=(\/|\$DEST_DIR|\$PAM_DIR).*/\1/p' "$here/pam_tid_look.sh"); do
     [ "$v" != PATH ] || continue # the search path for the system's tools, not a file
     value=$(W=$W /bin/bash -c 'source "$1"; source "$2"; eval "printf %s \"\${$3}\""' _ \
-        "$here/pam_tidcmd.sh" "$work/stubs" "$v")
+        "$here/pam_tid_look.sh" "$work/stubs" "$v")
     check "$v is replaced" [ "${value#"$W"/}" != "$value" ]
 done
 if [ "$failures" != 0 ]; then
@@ -248,9 +248,9 @@ setup
 run install
 check "install succeeds" [ "$status" = 0 ]
 check "sudo_local has the module in place of pam_tid.so" conf_is "$INSTALLED"
-check "the module is installed" cmp -s "$W/build/pam_tidcmd.so" "$W/Security/pam_tidcmd/pam_tidcmd.so"
-check "the probe is installed" cmp -s "$W/build/pam_tidcmd_probe" "$W/Security/pam_tidcmd/pam_tidcmd_probe"
-check "this script is installed" cmp -s "$here/pam_tidcmd.sh" "$W/Security/pam_tidcmd/pam_tidcmd"
+check "the module is installed" cmp -s "$W/build/pam_tid_look.so" "$W/Security/pam_tid_look/pam_tid_look.so"
+check "the probe is installed" cmp -s "$W/build/pam_tid_look_probe" "$W/Security/pam_tid_look/pam_tid_look_probe"
+check "this script is installed" cmp -s "$here/pam_tid_look.sh" "$W/Security/pam_tid_look/pam_tid_look"
 check "no temporary files or backups are left" no_leftovers
 run uninstall
 check "uninstall succeeds" [ "$status" = 0 ]
@@ -269,20 +269,20 @@ check "it says sudo starts afterwards" said "sudo starts as before"
 echo "== a reinstall that fails keeps the previous module"
 setup
 run install --timeout 45
-echo "module v2" >"$W/build/pam_tidcmd.so"
+echo "module v2" >"$W/build/pam_tid_look.so"
 before=$(cat "$W/pam.d/sudo_local")
 FAKE_TOUCHID=cancel run install
 check "the reinstall fails" [ "$status" = 1 ]
 check "sudo_local is as before the reinstall" conf_is "$before"
-check "module v1 is back" grep -q "module v1" "$W/Security/pam_tidcmd/pam_tidcmd.so"
+check "module v1 is back" grep -q "module v1" "$W/Security/pam_tid_look/pam_tid_look.so"
 check "no temporary files or backups are left" no_leftovers
 run install
-check "a reinstall keeps timeout=45" grep -q "pam_tidcmd.so timeout=45$" "$W/pam.d/sudo_local"
-check "  and installs module v2" grep -q "module v2" "$W/Security/pam_tidcmd/pam_tidcmd.so"
+check "a reinstall keeps timeout=45" grep -q "pam_tid_look.so timeout=45$" "$W/pam.d/sudo_local"
+check "  and installs module v2" grep -q "module v2" "$W/Security/pam_tid_look/pam_tid_look.so"
 
 echo "== nothing is changed when the module does not load"
 setup
-echo "BROKEN" >"$W/build/pam_tidcmd.so"
+echo "BROKEN" >"$W/build/pam_tid_look.so"
 run install
 check "install fails" [ "$status" = 1 ]
 check "it says the module does not load" said "The module does not load"
@@ -300,7 +300,7 @@ check "the module directory is gone" gone
 echo "== nothing is changed when the new sudo_local would not load"
 setup
 echo "BROKEN" >"$W/broken.so"
-add_line "#pam_tidcmd# auth optional $W/broken.so" # the rewrite makes this line active
+add_line "#pam_tid_look# auth optional $W/broken.so" # the rewrite makes this line active
 before=$(cat "$W/pam.d/sudo_local")
 run install
 check "install fails" [ "$status" = 1 ]
@@ -322,7 +322,7 @@ echo "== an interrupted install is undone, and holds the lock until then"
 setup
 FAKE_TOUCHID=hang run_until_waiting install
 run uninstall
-check "a second run is refused" said "Another pam_tidcmd install or uninstall is running"
+check "a second run is refused" said "Another pam_tid_look install or uninstall is running"
 kill -TERM "$script_pid"
 finish_waiting
 check "the interrupted run fails" [ "$status" = 143 ]
@@ -358,7 +358,7 @@ setup
 FAKE_TOUCHID=cancel FAKE_MV=fail run install
 check "install fails" [ "$status" = 1 ]
 check "it says so" said "Could not put $W/pam.d/sudo_local back"
-check "the module sudo_local names is kept" [ -f "$W/Security/pam_tidcmd/pam_tidcmd.so" ]
+check "the module sudo_local names is kept" [ -f "$W/Security/pam_tid_look/pam_tid_look.so" ]
 saved=$(find "$W/pam.d" -name '.sudo_local.saved.*')
 check "the previous sudo_local is kept" [ "$(cat "$saved" 2>/dev/null)" = "$APPLE" ]
 check "  and named" said "The previous $W/pam.d/sudo_local is in $saved"
@@ -376,13 +376,13 @@ echo "== uninstall changes nothing if sudo starts only with the module"
 setup
 run install
 echo "BROKEN" >"$W/broken.so"
-add_line "#pam_tidcmd# auth optional $W/broken.so" # uninstall would make this line active
+add_line "#pam_tid_look# auth optional $W/broken.so" # uninstall would make this line active
 before=$(cat "$W/pam.d/sudo_local")
 run uninstall
 check "uninstall fails" [ "$status" = 1 ]
 check "it says why" said "sudo starts with the module, so"
 check "sudo_local is unchanged" conf_is "$before"
-check "the module is kept" [ -f "$W/Security/pam_tidcmd/pam_tidcmd.so" ]
+check "the module is kept" [ -f "$W/Security/pam_tid_look/pam_tid_look.so" ]
 
 echo "== uninstall sets sudo_local aside if nothing else gets sudo to start"
 setup
@@ -392,9 +392,9 @@ add_line "auth optional $W/broken.so"
 run uninstall
 check "uninstall succeeds" [ "$status" = 0 ]
 check "sudo_local is gone" [ ! -e "$W/pam.d/sudo_local" ]
-aside=$(find "$W/pam.d" -name 'sudo_local.pam_tidcmd-disabled.*')
+aside=$(find "$W/pam.d" -name 'sudo_local.pam_tid_look-disabled.*')
 check "its other lines are kept aside" grep -q "broken.so" "$aside"
-check "  without the module" sh -c "! grep -q '^auth.*pam_tidcmd.so' '$aside'"
+check "  without the module" sh -c "! grep -q '^auth.*pam_tid_look.so' '$aside'"
 check "it says so" said "sudo starts now without"
 check "the module directory is gone" gone
 
@@ -405,7 +405,7 @@ FAKE_SUDO=broken run uninstall
 check "uninstall fails" [ "$status" = 1 ]
 check "it says the cause is elsewhere" said "the cause is elsewhere"
 check "sudo_local is Apple's again" conf_is "$APPLE"
-check "nothing is set aside" [ -z "$(find "$W/pam.d" -name 'sudo_local.pam_tidcmd-disabled.*')" ]
+check "nothing is set aside" [ -z "$(find "$W/pam.d" -name 'sudo_local.pam_tid_look-disabled.*')" ]
 check "the module directory is gone" gone
 
 echo "== uninstall does not write back a sudo_local PAM cannot load"
@@ -416,7 +416,7 @@ add_line "auth optional $W/broken.so"
 FAKE_SUDO=broken run uninstall
 check "uninstall fails" [ "$status" = 1 ]
 check "sudo_local stays aside" [ ! -e "$W/pam.d/sudo_local" ]
-aside=$(find "$W/pam.d" -name 'sudo_local.pam_tidcmd-disabled.*')
+aside=$(find "$W/pam.d" -name 'sudo_local.pam_tid_look-disabled.*')
 check "  with its other lines" grep -q "broken.so" "$aside"
 check "it says PAM could not load it" said "PAM could not load"
 check "  and that there is another cause" said "there is another cause outside it"
@@ -435,21 +435,21 @@ check "sudo_local stays without the module" conf_is "$APPLE"
 echo "== uninstall keeps the module while another policy uses it"
 setup
 run install
-echo "auth sufficient $W/Security/pam_tidcmd/pam_tidcmd.so" >"$W/pam.d/other_service"
+echo "auth sufficient $W/Security/pam_tid_look/pam_tid_look.so" >"$W/pam.d/other_service"
 run uninstall
 check "uninstall fails" [ "$status" = 1 ]
 check "it names the file" said "$W/pam.d/other_service"
 check "sudo_local is Apple's again" conf_is "$APPLE"
-check "the module is kept" [ -f "$W/Security/pam_tidcmd/pam_tidcmd.so" ]
+check "the module is kept" [ -f "$W/Security/pam_tid_look/pam_tid_look.so" ]
 
 echo "== uninstall keeps the module while sudo_local still names it"
 setup
 run install
-add_line "account    required       $W/Security/pam_tidcmd/pam_tidcmd.so"
+add_line "account    required       $W/Security/pam_tid_look/pam_tid_look.so"
 run uninstall
 check "uninstall fails" [ "$status" = 1 ]
 check "it names sudo_local" said "these files still use the module:"$'\n'"$W/pam.d/sudo_local"
-check "the module is kept" [ -f "$W/Security/pam_tidcmd/pam_tidcmd.so" ]
+check "the module is kept" [ -f "$W/Security/pam_tid_look/pam_tid_look.so" ]
 
 echo "== a # right after a module path starts a comment, as in OpenPAM"
 setup
@@ -457,19 +457,19 @@ set_conf "$HEAD
 auth       sufficient     pam_tid.so#Apple's"
 commented=$(cat "$W/pam.d/sudo_local")
 run install
-check "install replaces pam_tid.so#…" grep -qx "#pam_tidcmd# auth       sufficient     pam_tid.so#Apple's" "$W/pam.d/sudo_local"
+check "install replaces pam_tid.so#…" grep -qx "#pam_tid_look# auth       sufficient     pam_tid.so#Apple's" "$W/pam.d/sudo_local"
 check "  leaving one active auth line" [ "$(grep -c '^auth' "$W/pam.d/sudo_local")" = 1 ]
 run uninstall
 check "uninstall puts it back byte for byte" conf_is "$commented"
 setup
 run install
-set_conf "$(sed 's|pam_tidcmd[.]so$|pam_tidcmd.so#local|' "$W/pam.d/sudo_local")"
+set_conf "$(sed 's|pam_tid_look[.]so$|pam_tid_look.so#local|' "$W/pam.d/sudo_local")"
 run uninstall
-check "uninstall removes pam_tidcmd.so#…" conf_is "$APPLE"
+check "uninstall removes pam_tid_look.so#…" conf_is "$APPLE"
 check "  before it removes the module" gone
 
 echo "== rescue as root replaces the module with Apple's"
-M=$W/Security/pam_tidcmd/pam_tidcmd.so
+M=$W/Security/pam_tid_look/pam_tid_look.so
 setup
 run install
 installed=$(cat "$W/pam.d/sudo_local")
@@ -479,15 +479,15 @@ check "rescue succeeds" [ "$status" = 0 ]
 check "the module is a link to Apple's" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
 check "it says so" said "is now a link to Apple's"
 check "sudo_local is unchanged" conf_is "$installed"
-check "the broken module is kept" grep -q BROKEN "$W/Security/pam_tidcmd/.pam_tidcmd.so.broken"
+check "the broken module is kept" grep -q BROKEN "$W/Security/pam_tid_look/.pam_tid_look.so.broken"
 run status
 check "status says the module was replaced" said "replaced with Apple's pam_tid.so by rescue"
 check "  and how to install it again" said "To install it again: sudo "
 status=0
 out=$(W=$W /bin/bash -c 'source "$1"; source "$2"; HERE=$DEST_DIR; main status' _ \
-    "$here/pam_tidcmd.sh" "$work/stubs" 2>&1) || status=$?
+    "$here/pam_tid_look.sh" "$work/stubs" 2>&1) || status=$?
 check "  from the installed copy, without telling it to install" \
-    sh -c "! printf '%s' \"\$1\" | grep -q 'pam_tidcmd/pam_tidcmd install'" _ "$out"
+    sh -c "! printf '%s' \"\$1\" | grep -q 'pam_tid_look/pam_tid_look install'" _ "$out"
 check "  but where to install from" said "run install from the build directory or from Homebrew"
 run uninstall
 check "uninstall afterwards succeeds" [ "$status" = 0 ]
@@ -507,13 +507,13 @@ setup
 run install
 break_module
 FAKE_ROOT=1 run rescue
-echo "module v2" >"$W/build/pam_tidcmd.so"
+echo "module v2" >"$W/build/pam_tid_look.so"
 FAKE_TOUCHID=cancel run install
 check "an install over a rescue that fails keeps the link" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
 run install
 check "an install over a rescue succeeds" [ "$status" = 0 ]
 check "  with the new module" grep -q "module v2" "$M"
-check "  and drops the broken one" [ ! -e "$W/Security/pam_tidcmd/.pam_tidcmd.so.broken" ]
+check "  and drops the broken one" [ ! -e "$W/Security/pam_tid_look/.pam_tid_look.so.broken" ]
 
 setup
 run install
@@ -524,7 +524,7 @@ check "  and points to --force" said "rescue --force"
 FAKE_ROOT=1 run rescue --force
 check "rescue --force when sudo starts succeeds" [ "$status" = 0 ]
 check "  with a link to Apple's" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
-check "  and keeps the module it replaced" grep -q "module v1" "$W/Security/pam_tidcmd/.pam_tidcmd.so.broken"
+check "  and keeps the module it replaced" grep -q "module v1" "$W/Security/pam_tid_look/.pam_tid_look.so.broken"
 FAKE_ROOT=1 run rescue --force
 check "rescue --force over Apple's module changes nothing" said "already Apple's pam_tid.so"
 check "  and keeps the link" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
@@ -539,7 +539,7 @@ check "  not a link" [ ! -L "$M" ]
 
 setup
 run install
-rm -rf "$W/Security/pam_tidcmd"
+rm -rf "$W/Security/pam_tid_look"
 FAKE_ROOT=1 run rescue
 check "rescue when the module is gone succeeds" [ "$status" = 0 ]
 check "  with a link to Apple's" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
@@ -581,7 +581,7 @@ check_touchid() {
             sed "s|/usr/bin/sudo -n -u \"\$user\" -- /usr/bin/sudo -S -k /usr/bin/true|/bin/bash -c \"\$FAKE\"|")"
         TOUCHID_WAIT=2
         if touchid_check "$W"; then echo "check passed"; else echo "check failed: $check_error"; fi
-    ' _ "$here/pam_tidcmd.sh" 2>&1) || status=$?
+    ' _ "$here/pam_tid_look.sh" 2>&1) || status=$?
     elapsed=$((SECONDS - started))
 }
 setup
@@ -634,8 +634,8 @@ check "rescue fails when sudo still does not load" [ "$status" = 1 ]
 check "  and points to the README" said "Break glass"
 
 echo "== backups of sudo_local"
-B=$W/pam.d/.sudo_local.pam_tidcmd-backup
-backups() { find "$W/pam.d" -name '.sudo_local.pam_tidcmd-backup.*' | sort; }
+B=$W/pam.d/.sudo_local.pam_tid_look-backup
+backups() { find "$W/pam.d" -name '.sudo_local.pam_tid_look-backup.*' | sort; }
 setup
 FAKE_TIME=20261114-100000 run install
 check "install keeps the sudo_local it replaced" [ "$(cat "$B.20261114-100000" 2>/dev/null)" = "$APPLE" ]
@@ -645,7 +645,7 @@ check "a reinstall keeps the one it replaced" [ "$(cat "$B.20261114-100001" 2>/d
 FAKE_TIME=20261114-100002 run install
 check "  but none when sudo_local stays the same" [ ! -e "$B.20261114-100002" ]
 FAKE_TIME=20261114-100003 run uninstall
-check "uninstall keeps one too" grep -q "pam_tidcmd.so timeout=45$" "$B.20261114-100003"
+check "uninstall keeps one too" grep -q "pam_tid_look.so timeout=45$" "$B.20261114-100003"
 check "uninstall removes the module while backups name it" gone
 check "  and succeeds" [ "$status" = 0 ]
 check "  and puts Apple's sudo_local back" conf_is "$APPLE"
@@ -665,7 +665,7 @@ echo mine >"$B.20250101-000000.orig"
 echo mine >"$W/pam.d/sudo_local.bak-20250101-000000"
 ln -s "$W/apple/pam_tid.so.2" "$B.20240101-000000"
 FAKE_TIME=20261114-120000 run install
-kept=$(find "$W/pam.d" -type f -name '.sudo_local.pam_tidcmd-backup.*' | grep -cE 'backup[.][0-9]{8}-[0-9]{6}$')
+kept=$(find "$W/pam.d" -type f -name '.sudo_local.pam_tid_look-backup.*' | grep -cE 'backup[.][0-9]{8}-[0-9]{6}$')
 check "only the newest five backups are kept" [ "$kept" = 5 ]
 check "  the oldest are deleted" sh -c "[ ! -e '$B.20250101-000000' ] && [ ! -e '$B.20250101-000001' ]"
 check "  the next oldest is kept" [ -e "$B.20250101-000002" ]
@@ -682,20 +682,20 @@ check "  and the second run succeeds" [ "$status" = 0 ]
 echo "== install and uninstall show the change and ask first"
 setup
 run install
-check "install asks on the terminal" grep -qF "Install pam_tidcmd? [y/N]" "$W/tty"
+check "install asks on the terminal" grep -qF "Install pam_tid_look? [y/N]" "$W/tty"
 check "  after showing what goes" said "-auth       sufficient     pam_tid.so"
-check "  and what comes" said "+auth       sufficient     $W/Security/pam_tidcmd/pam_tidcmd.so"
-sum=$(/usr/bin/shasum -a 256 <"$W/build/pam_tidcmd.so")
+check "  and what comes" said "+auth       sufficient     $W/Security/pam_tid_look/pam_tid_look.so"
+sum=$(/usr/bin/shasum -a 256 <"$W/build/pam_tid_look.so")
 check "  and the module's SHA-256 hash" said "SHA-256 ${sum%% *}"
 check "  on a first install" said "not installed yet"
 check "  and installs on y" conf_is "$INSTALLED"
 run install
 check "a reinstall of the same build says so" said "the same as the installed module"
 check "  and that sudo_local stays as it is" said "$W/pam.d/sudo_local stays as it is."
-echo "module v2" >"$W/build/pam_tidcmd.so"
+echo "module v2" >"$W/build/pam_tid_look.so"
 run install --timeout 45
 check "a reinstall of another build says it differs" said "differs from the installed module"
-check "  and shows the new line" said "+auth       sufficient     $W/Security/pam_tidcmd/pam_tidcmd.so timeout=45"
+check "  and shows the new line" said "+auth       sufficient     $W/Security/pam_tid_look/pam_tid_look.so timeout=45"
 break_module
 FAKE_ROOT=1 run rescue
 run install
@@ -732,7 +732,7 @@ check "  before the checks start" [ ! -e "$W/lock" ]
 run install --yes
 check "install --yes without a terminal installs" conf_is "$INSTALLED"
 check "  without asking" [ ! -e "$W/tty" ]
-check "  but shows the change" said "+auth       sufficient     $W/Security/pam_tidcmd/pam_tidcmd.so"
+check "  but shows the change" said "+auth       sufficient     $W/Security/pam_tid_look/pam_tid_look.so"
 run uninstall
 check "uninstall without a terminal is refused" [ "$status" = 1 ]
 check "  and says why" said "There is no terminal to ask on"
@@ -741,7 +741,7 @@ check "  and keeps the module" [ -f "$M" ]
 echo n >"$W/tty"
 run uninstall
 check "uninstall answered n fails" [ "$status" = 1 ]
-check "  after asking" grep -qF "Uninstall pam_tidcmd? [y/N]" "$W/tty"
+check "  after asking" grep -qF "Uninstall pam_tid_look? [y/N]" "$W/tty"
 check "  and showing the change" said "+auth       sufficient     pam_tid.so"
 check "  and changes nothing" conf_is "$INSTALLED"
 check "  and keeps the module" [ -f "$M" ]
@@ -758,7 +758,7 @@ check "uninstall --yes without a terminal uninstalls" conf_is "$APPLE"
 check "  and removes the module" gone
 
 setup
-mkdir -p "$W/Security/pam_tidcmd"
+mkdir -p "$W/Security/pam_tid_look"
 echo "module v1" >"$M"
 echo n >"$W/tty"
 run uninstall
@@ -807,13 +807,13 @@ echo "== other cases"
 setup
 run uninstall
 check "uninstall without an install succeeds" [ "$status" = 0 ]
-check "  and says so" said "does not use pam_tidcmd"
+check "  and says so" said "does not use pam_tid_look"
 setup
 rm "$W/pam.d/sudo_local"
 run install
-check "install without a sudo_local adds the line" grep -q "^auth       sufficient     .*pam_tidcmd.so$" "$W/pam.d/sudo_local"
+check "install without a sudo_local adds the line" grep -q "^auth       sufficient     .*pam_tid_look.so$" "$W/pam.d/sudo_local"
 run uninstall
-check "  and uninstall takes it out" sh -c "! grep -q pam_tidcmd '$W/pam.d/sudo_local'"
+check "  and uninstall takes it out" sh -c "! grep -q pam_tid_look '$W/pam.d/sudo_local'"
 setup
 add_line "auth       sufficient     pam_tid.so"
 run install
@@ -850,7 +850,7 @@ mkdir -p "$W/victim"
 nl_path="$W/tmp"$'\n'"$W/victim"
 mkdir -p "$nl_path"
 W=$W /bin/bash -c 'source "$1"; source "$2"; add_temp "$3"; finish' _ \
-    "$here/pam_tidcmd.sh" "$work/stubs" "$nl_path" || true
+    "$here/pam_tid_look.sh" "$work/stubs" "$nl_path" || true
 check "a temporary path with a newline in it is removed" [ ! -e "$nl_path" ]
 check "  as one path" [ -d "$W/victim" ]
 run frobnicate
@@ -858,10 +858,10 @@ check "an unknown action is refused" [ "$status" = 2 ]
 run
 check "no action is refused" [ "$status" = 2 ]
 setup
-mkdir -p "$W/Security/pam_tidcmd"
+mkdir -p "$W/Security/pam_tid_look"
 status=0
 out=$(W=$W /bin/bash -c 'source "$1"; source "$2"; HERE=$DEST_DIR; main install' _ \
-    "$here/pam_tidcmd.sh" "$work/stubs" 2>&1) || status=$?
+    "$here/pam_tid_look.sh" "$work/stubs" 2>&1) || status=$?
 check "the installed copy refuses to install" said "This is the installed copy"
 
 echo

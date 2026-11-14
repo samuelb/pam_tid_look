@@ -1,4 +1,4 @@
-/* Checks the parts of pam_tidcmd that can run outside sudo. Shows no dialog. */
+/* Checks the parts of pam_tid_look that can run outside sudo. No dialog. */
 
 #import <Foundation/Foundation.h>
 #import <bsm/audit.h>
@@ -9,11 +9,11 @@
 #import <spawn.h>
 #import <sys/wait.h>
 
-NSString *tidcmd_build_prompt(int argc, char **argv, char **envp, const char *home);
-char **tidcmd_exec_environment(void);
-BOOL tidcmd_policy_uses_path(const char *sudoConf, const char *sudoers);
-BOOL tidcmd_touchid_usable(uid_t uid);
-unsigned tidcmd_timeout(int argc, const char **argv);
+NSString *tid_look_build_prompt(int argc, char **argv, char **envp, const char *home);
+char **tid_look_exec_environment(void);
+BOOL tid_look_policy_uses_path(const char *sudoConf, const char *sudoers);
+BOOL tid_look_touchid_usable(uid_t uid);
+unsigned tid_look_timeout(int argc, const char **argv);
 int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv);
 
 static int failures;
@@ -74,7 +74,7 @@ static char **exec_layout(int argc, char **argv) {
 static NSString *line_with_arg(NSData *arg, const char *home) {
     NSMutableData *bytes = [arg mutableCopy];
     [bytes appendBytes:"" length:1];
-    return command_of(tidcmd_build_prompt(3, exec_layout(3, (char *[]){"sudo", "echo", bytes.mutableBytes}), NULL, home));
+    return command_of(tid_look_build_prompt(3, exec_layout(3, (char *[]){"sudo", "echo", bytes.mutableBytes}), NULL, home));
 }
 
 /* The PATH section's lines, compared like expect() compares the command line. */
@@ -128,7 +128,7 @@ static NSString *run_self(char **argv, char **envp) {
 static int print_environment(char **argv) {
     char *comma = argv[2] ? strchr(argv[2], ',') : NULL;
     if (comma) *comma = '\0';
-    char **env = tidcmd_exec_environment();
+    char **env = tid_look_exec_environment();
     if (!env) printf("(none)\n");
     for (char **e = env; e && *e; e++) printf("%s\n", *e);
     free(env);
@@ -156,14 +156,14 @@ static char *write_file(NSString *dir, NSString *name, NSString *text) {
 
 /* The timeout read from the given module options. */
 static void expect_timeout(NSString *label, unsigned wanted, int argc, const char **argv) {
-    unsigned got = tidcmd_timeout(argc, argv);
+    unsigned got = tid_look_timeout(argc, argv);
     check(got == wanted, label, [NSString stringWithFormat:@"%u seconds (wanted %u)", got, wanted]);
 }
 
 #define ARGV(...) ((char *[]){__VA_ARGS__, NULL})
 #define COUNT(...) ((int)(sizeof((char *[]){__VA_ARGS__}) / sizeof(char *)))
 /* A prompt for sudo's argv, with sudo's environment env. */
-#define PROMPT_ENV(env, ...) tidcmd_build_prompt(COUNT(__VA_ARGS__), exec_layout(COUNT(__VA_ARGS__), ARGV(__VA_ARGS__)), env, home)
+#define PROMPT_ENV(env, ...) tid_look_build_prompt(COUNT(__VA_ARGS__), exec_layout(COUNT(__VA_ARGS__), ARGV(__VA_ARGS__)), env, home)
 /* The same with a PATH of the system's directories only, which only root can change. */
 #define PROMPT(...) PROMPT_ENV(systemPath, __VA_ARGS__)
 
@@ -195,9 +195,9 @@ int main(int argc, char **argv) {
             @"sudo cat '/etc/hosts\\u{FE0F}' '\\u{3164}' 'a\\u{34F}b' '\\u{2800}'");
         expect(@"argv[0] chosen by the caller is not shown", PROMPT("echo", "rm", "-rf", "/"),
             @"sudo rm -rf /");
-        expect(@"no arguments at all", tidcmd_build_prompt(0, (char *[]){NULL}, systemPath, home), @"sudo");
+        expect(@"no arguments at all", tid_look_build_prompt(0, (char *[]){NULL}, systemPath, home), @"sudo");
 
-        /* Look-alike letters (see mark_lookalikes in pam_tidcmd.m). */
+        /* Look-alike letters (see mark_lookalikes in pam_tid_look.m). */
         expect(@"a Cyrillic letter among Latin ones is spelled out", PROMPT("sudo", "/usr/bin/\xD1\x96" "d"),
             @"sudo '/usr/bin/\\u{456}d'");
         expect(@"so are Greek, Armenian and Cherokee ones",
@@ -233,7 +233,7 @@ int main(int argc, char **argv) {
         char **cut = exec_layout(3, ARGV("sudo", "--preserve-env=TERM,,BASH_ENV", "bash"));
         char *last = NULL;
         for (char *t = strtok_r(cut[1] + strlen("--preserve-env="), ",", &last); t; t = strtok_r(NULL, ",", &last)) {}
-        expect(@"arguments cut in place by sudo are shown whole", tidcmd_build_prompt(3, cut, systemPath, home),
+        expect(@"arguments cut in place by sudo are shown whole", tid_look_build_prompt(3, cut, systemPath, home),
             @"sudo --preserve-env=TERM,,BASH_ENV bash");
 
         char longArg[2001];
@@ -276,7 +276,7 @@ int main(int argc, char **argv) {
 
         /* A deep working directory whose names are all escapes (U+200B) is cut too. */
         NSString *base = [NSTemporaryDirectory() stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"tidcmd_test.%d", getpid()]];
+            [NSString stringWithFormat:@"tid_look_test.%d", getpid()]];
         NSString *deep = base;
         for (int level = 0; level < 4; level++) {
             deep = [deep stringByAppendingPathComponent:[@"" stringByPaddingToLength:60 withString:@"​" startingAtIndex:0]];
@@ -299,7 +299,7 @@ int main(int argc, char **argv) {
          * /usr/bin or /bin cannot.
          */
         NSString *scratch = [NSTemporaryDirectory() stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"tidcmd_test.%d.path", getpid()]];
+            [NSString stringWithFormat:@"tid_look_test.%d.path", getpid()]];
         NSString *evil = [scratch stringByAppendingPathComponent:@"evil"];
         NSString *lookalikeDir = [scratch stringByAppendingPathComponent:@"b\u0456n"];
         NSString *longDir = [scratch stringByAppendingPathComponent:[@"" stringByPaddingToLength:200 withString:@"d" startingAtIndex:0]];
@@ -340,11 +340,11 @@ int main(int argc, char **argv) {
         expect_hint(@"with -E", PROMPT_ENV(evilFirst, "sudo", "-E", "true"), @"/usr/bin/true");
         expect_hint(@"a file without an execute bit is skipped", PROMPT_ENV(evilFirst, "sudo", "whoami"), @"/usr/bin/whoami");
         expect_hint(@"a directory is skipped", PROMPT_ENV(evilFirst, "sudo", "ls"), @"/bin/ls");
-        expect_hint(@"not found: no hint", PROMPT("sudo", "tidcmd-no-such-command"), @"(none)");
+        expect_hint(@"not found: no hint", PROMPT("sudo", "tid_look-no-such-command"), @"(none)");
         expect_hint(@"an error other than \"no such file\": no hint",
             PROMPT_ENV(ARGV(keep([NSString stringWithFormat:@"PATH=%@/loop:/usr/bin", scratch])), "sudo", "id"), @"(none)");
         expect_hint(@"a relative PATH entry: no hint", PROMPT_ENV(ARGV("PATH=bin:/usr/bin"), "sudo", "id"), @"(none)");
-        expect_hint(@"a match only through \".\": no hint", PROMPT_ENV(ARGV("PATH=.:/tidcmd-nonexistent"), "sudo", "id"), @"(none)");
+        expect_hint(@"a match only through \".\": no hint", PROMPT_ENV(ARGV("PATH=.:/tid_look-nonexistent"), "sudo", "id"), @"(none)");
         expect_hint(@"\".\" and empty entries are tried last", PROMPT_ENV(ARGV("PATH=.::/usr/bin"), "sudo", "id"), @"/usr/bin/id");
         expect_hint(@"no PATH: no hint", PROMPT_ENV(ARGV("HOME=/var/empty"), "sudo", "id"), @"(none)");
         expect_hint(@"no environment: no hint", PROMPT_ENV(NULL, "sudo", "id"), @"(none)");
@@ -388,7 +388,7 @@ int main(int argc, char **argv) {
                 [words addObject:@(noHint[t][k])];
             }
             expect_hint([@"no hint for " stringByAppendingString:[words componentsJoinedByString:@" "]],
-                tidcmd_build_prompt(n, exec_layout(n, args), evilFirst, home), @"(none)");
+                tid_look_build_prompt(n, exec_layout(n, args), evilFirst, home), @"(none)");
         }
         const char *program = getprogname();
         setprogname("sudoedit");
@@ -400,7 +400,7 @@ int main(int argc, char **argv) {
             PROMPT_ENV(ARGV(keep([@"PATH=" stringByAppendingString:lookalikeDir])), "sudo", "id"),
             [NSString stringWithFormat:@"%@/b\\u{456}n/id | %@", scratch, changeable]);
         expect_hint(@"the user's home is written as ~",
-            tidcmd_build_prompt(2, exec_layout(2, ARGV("sudo", "id")), evilOnly, scratch.fileSystemRepresentation),
+            tid_look_build_prompt(2, exec_layout(2, ARGV("sudo", "id")), evilOnly, scratch.fileSystemRepresentation),
             [NSString stringWithFormat:@"~/evil/id | %@", changeable]);
         NSString *longHint = hint_of(PROMPT_ENV(ARGV(keep([@"PATH=" stringByAppendingString:longDir])), "sudo", "id"));
         check([longHint containsString:@"CHARACTERS NOT SHOWN"] && [longHint containsString:@"ddd/id | "] && longHint.length < 260,
@@ -413,44 +413,44 @@ int main(int argc, char **argv) {
 
         /* The environment as exec passed it, read back by the module. */
         char **twoPaths = ARGV("PATH=/usr/bin", "A=1", "PATH=", "PATH=/tmp/x");
-        NSString *asPassed = printed(run_self(ARGV("tidcmd_test", "--print-environment", "plain"), twoPaths), @[@"PATH", @"A"]);
+        NSString *asPassed = printed(run_self(ARGV("tid_look_test", "--print-environment", "plain"), twoPaths), @[@"PATH", @"A"]);
         check([asPassed isEqualToString:@"PATH=/usr/bin A=1 PATH= PATH=/tmp/x"],
             @"the environment is read as exec passed it, duplicates kept", asPassed);
         NSString *emptyName = run_self(ARGV("", "--print-environment", "plain"), twoPaths);
         check([emptyName isEqualToString:@"(none)\n"], @"no environment with an empty argv[0]", printed(emptyName, @[@"PATH", @"A"]));
-        NSString *cutArg = run_self(ARGV("tidcmd_test", "--print-environment", "TERM,PATH", "last"), twoPaths);
+        NSString *cutArg = run_self(ARGV("tid_look_test", "--print-environment", "TERM,PATH", "last"), twoPaths);
         check([cutArg isEqualToString:@"(none)\n"], @"no environment when an argument was cut in place", printed(cutArg, @[@"PATH", @"A"]));
         /* Each piece matches an argument here; only where the arguments start tells the cut. */
-        NSString *cutPath = run_self(ARGV("tidcmd_test", "--print-environment", "X,PATH=/tmp/evil", "PATH=/tmp/evil"), ARGV("A=1"));
+        NSString *cutPath = run_self(ARGV("tid_look_test", "--print-environment", "X,PATH=/tmp/evil", "PATH=/tmp/evil"), ARGV("A=1"));
         check([cutPath isEqualToString:@"(none)\n"], @"an argument cut in place is not read as the environment",
             printed(cutPath, @[@"PATH", @"A"]));
 
         /* What sudo's policy may change about the search. */
         NSString *policy = [NSTemporaryDirectory() stringByAppendingPathComponent:
-            [NSString stringWithFormat:@"tidcmd_test.%d.policy", getpid()]];
+            [NSString stringWithFormat:@"tid_look_test.%d.policy", getpid()]];
         NSString *included = [policy stringByAppendingPathComponent:@"sudoers.d"];
         [fm createDirectoryAtPath:included withIntermediateDirectories:YES attributes:nil error:NULL];
         char *noConf = keep([policy stringByAppendingPathComponent:@"missing.conf"]);
         char *stock = write_file(policy, @"stock", [NSString stringWithFormat:
             @"Defaults env_reset\n# Defaults secure_path=\"/usr/bin\"\n%%admin ALL = (ALL) ALL\n#includedir %@\n", included]);
         write_file(included, @"local", @"Defaults timestamp_timeout=0\n");
-        check(tidcmd_policy_uses_path(noConf, stock), @"a policy like macOS's searches PATH", @(stock));
+        check(tid_look_policy_uses_path(noConf, stock), @"a policy like macOS's searches PATH", @(stock));
         char *secure = write_file(policy, @"secure", @"Defaults\tsecure_path=\"/usr/bin:/bin\"\n");
-        check(!tidcmd_policy_uses_path(noConf, secure), @"secure_path: no hint", @(secure));
+        check(!tid_look_policy_uses_path(noConf, secure), @"secure_path: no hint", @(secure));
         char *runas = write_file(policy, @"runas", @"Defaults RUNAS_DEFAULT=nobody\n");
-        check(!tidcmd_policy_uses_path(noConf, runas), @"runas_default, in any case: no hint", @(runas));
+        check(!tid_look_policy_uses_path(noConf, runas), @"runas_default, in any case: no hint", @(runas));
         write_file(included, @"secure", @"Defaults secure_path=/usr/bin\n");
-        check(!tidcmd_policy_uses_path(noConf, stock), @"secure_path in an included directory: no hint", @(stock));
-        char *missing = write_file(policy, @"missing", @"@include tidcmd-missing\n");
-        check(!tidcmd_policy_uses_path(noConf, missing), @"an include that cannot be read: no hint", @(missing));
+        check(!tid_look_policy_uses_path(noConf, stock), @"secure_path in an included directory: no hint", @(stock));
+        char *missing = write_file(policy, @"missing", @"@include tid_look-missing\n");
+        check(!tid_look_policy_uses_path(noConf, missing), @"an include that cannot be read: no hint", @(missing));
         char *quoted = write_file(policy, @"quoted", @"@include \"local\"\n");
-        check(!tidcmd_policy_uses_path(noConf, quoted), @"an include it does not follow: no hint", @(quoted));
+        check(!tid_look_policy_uses_path(noConf, quoted), @"an include it does not follow: no hint", @(quoted));
         char *plain = write_file(policy, @"plain", @"Defaults env_reset\n");
         char *plugin = write_file(policy, @"sudo.conf", @"Plugin sudoers_policy sudoers.so\n");
-        check(!tidcmd_policy_uses_path(plugin, plain), @"a plugin in sudo.conf: no hint", @(plugin));
+        check(!tid_look_policy_uses_path(plugin, plain), @"a plugin in sudo.conf: no hint", @(plugin));
         char *noPlugin = write_file(policy, @"sudo2.conf", @"Set disable_coredump false\n");
-        check(tidcmd_policy_uses_path(noPlugin, plain), @"sudo.conf without a plugin", @(noPlugin));
-        check(!tidcmd_policy_uses_path(noConf, noConf), @"no sudoers: no hint", @(noConf));
+        check(tid_look_policy_uses_path(noPlugin, plain), @"sudo.conf without a plugin", @(noPlugin));
+        check(!tid_look_policy_uses_path(noConf, noConf), @"no sudoers: no hint", @(noConf));
         [fm removeItemAtPath:policy error:NULL];
 
         expect_timeout(@"no options: default timeout", 30, 0, (const char *[]){NULL});
@@ -482,7 +482,7 @@ int main(int argc, char **argv) {
         struct pam_conv conv = {no_conversation, NULL};
         pam_handle_t *pamh = NULL;
         if (evaluate && owner &&
-            pam_start("tidcmd_test", getpwuid(getuid())->pw_name, &conv, &pamh) == PAM_SUCCESS) {
+            pam_start("tid_look_test", getpwuid(getuid())->pw_name, &conv, &pamh) == PAM_SUCCESS) {
             __block BOOL thrown = NO;
             IMP original = method_setImplementation(evaluate,
                 imp_implementationWithBlock(^id(id context, NSInteger policy, NSDictionary *options, NSError **error) {
@@ -500,7 +500,7 @@ int main(int argc, char **argv) {
                    "      (needs a GUI session owned by this user)\n");
         }
 
-        BOOL usable = tidcmd_touchid_usable(getuid());
+        BOOL usable = tid_look_touchid_usable(getuid());
         printf("\nTouch ID usable for uid %d (non-interactive check): %s\n", getuid(), usable ? "yes" : "no");
 
         printf("\n%s\n", failures ? "FAILED" : "all checks passed");

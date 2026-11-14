@@ -14,55 +14,55 @@ ARCHS   = -arch arm64e -arch arm64 -arch x86_64
 SANITIZE = -O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined
 SANITIZE_ENV = ASAN_OPTIONS=external_symbolizer_path=/usr/bin/atos UBSAN_OPTIONS=print_stacktrace=1
 
-all: pam_tidcmd.so pam_tidcmd_probe
+all: pam_tid_look.so pam_tid_look_probe
 
-pam_tidcmd.so: pam_tidcmd.m
+pam_tid_look.so: pam_tid_look.m
 	$(CC) $(CFLAGS) $(ARCHS) -bundle -o $@ $< $(LIBS)
 	codesign --force --sign - $@
 
 # The installer's load check. Built for the module's architectures, so that on
 # Apple silicon it runs as arm64e and loads the slice sudo loads.
-pam_tidcmd_probe: pam_tidcmd_probe.c
+pam_tid_look_probe: pam_tid_look_probe.c
 	$(CC) $(PROBE_CFLAGS) $(ARCHS) -o $@ $< -lpam
 	codesign --force --sign - $@
 
-tidcmd_test: pam_tidcmd.m test.m
-	$(CC) $(CFLAGS) -o $@ pam_tidcmd.m test.m $(LIBS)
+tid_look_test: pam_tid_look.m test.m
+	$(CC) $(CFLAGS) -o $@ pam_tid_look.m test.m $(LIBS)
 
-tidcmd_test_sanitized: pam_tidcmd.m test.m
-	$(CC) $(CFLAGS) $(SANITIZE) -o $@ pam_tidcmd.m test.m $(LIBS)
+tid_look_test_sanitized: pam_tid_look.m test.m
+	$(CC) $(CFLAGS) $(SANITIZE) -o $@ pam_tid_look.m test.m $(LIBS)
 
 # Shows no dialog and needs no root.
-test: analyze sanitize tidcmd_test pam_tidcmd.so pam_tidcmd_probe
-	./tidcmd_test
-	./pam_tidcmd_probe module ./pam_tidcmd.so
+test: analyze sanitize tid_look_test pam_tid_look.so pam_tid_look_probe
+	./tid_look_test
+	./pam_tid_look_probe module ./pam_tid_look.so
 	/bin/bash ./install_test.sh
 	/bin/bash ./render_formula_test.sh
 
 # Clang's static analyzer on every source file. Any finding fails.
 analyze:
-	$(CC) $(CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null pam_tidcmd.m
-	$(CC) $(PROBE_CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null pam_tidcmd_probe.c
+	$(CC) $(CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null pam_tid_look.m
+	$(CC) $(PROBE_CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null pam_tid_look_probe.c
 	$(CC) $(CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null test.m
 	$(CC) $(CFLAGS) --analyze -Xclang -analyzer-werror -o /dev/null dialog_check.m
 
 # The prompt tests again, built with AddressSanitizer and
 # UndefinedBehaviorSanitizer. Any finding ends the run and fails.
-sanitize: tidcmd_test_sanitized
-	$(SANITIZE_ENV) ./tidcmd_test_sanitized
+sanitize: tid_look_test_sanitized
+	$(SANITIZE_ENV) ./tid_look_test_sanitized
 
 lint:
-	shellcheck -s bash pam_tidcmd.sh install_test.sh render_formula.sh render_formula_test.sh
+	shellcheck -s bash pam_tid_look.sh install_test.sh render_formula.sh render_formula_test.sh
 
 # Raises real authorization dialogs for a moment. See dialog_check.m.
-dialog_check: dialog_check.m pam_tidcmd.m
-	$(CC) $(CFLAGS) -o $@ dialog_check.m pam_tidcmd.m -framework CoreGraphics $(LIBS)
+dialog_check: dialog_check.m pam_tid_look.m
+	$(CC) $(CFLAGS) -o $@ dialog_check.m pam_tid_look.m -framework CoreGraphics $(LIBS)
 
 dialog-check: dialog_check
 	./dialog_check
 
 clean:
-	rm -f pam_tidcmd.so pam_tidcmd_probe tidcmd_test tidcmd_test_sanitized dialog_check
-	rm -rf tidcmd_test_sanitized.dSYM
+	rm -f pam_tid_look.so pam_tid_look_probe tid_look_test tid_look_test_sanitized dialog_check
+	rm -rf tid_look_test_sanitized.dSYM
 
 .PHONY: all test analyze sanitize lint dialog-check clean

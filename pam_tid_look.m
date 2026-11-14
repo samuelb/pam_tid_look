@@ -1,5 +1,5 @@
 /*
- * pam_tidcmd: Touch ID for sudo, with the command shown in the dialog.
+ * pam_tid_look: Touch ID for sudo, with the command shown in the dialog.
  *
  * Copyright (c) 2026 Samuel Barabas. MIT License, see LICENSE. Functions
  * ported from macos-sudo-touchid-context are marked where they are.
@@ -76,11 +76,11 @@ enum {
     kDismissRetry = 1,    /* seconds between dismissals while the request is still pending */
 };
 
-static os_log_t tidcmd_log(void) {
+static os_log_t tid_look_log(void) {
     static os_log_t log;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        log = os_log_create("pam_tidcmd", "auth");
+        log = os_log_create("pam_tid_look", "auth");
     });
     return log;
 }
@@ -478,7 +478,7 @@ static BOOL root_owned(const char *path, struct stat *st) {
 /*
  * Whether only root can change what an absolute path names: "/", every
  * directory on the way and the file itself, through symbolic links, pass
- * root_owned(). The rule of check_dirs() in pam_tidcmd.sh. Anything that
+ * root_owned(). The rule of check_dirs() in pam_tid_look.sh. Anything that
  * cannot be checked fails.
  * Ported from root_only() in the fork macos-sudo-touchid-context
  * (MIT License, Copyright (c) 2026 Lauri Gates).
@@ -526,7 +526,7 @@ static BOOL root_only(const char *path) {
 /*
  * The PATH section of the prompt, or "" when there is no hint. envp is the
  * environment as exec passed it, or NULL when that is unknown or sudo does not
- * search the caller's PATH (see tidcmd_policy_uses_path).
+ * search the caller's PATH (see tid_look_policy_uses_path).
  *
  * The section warns when someone other than root can change the file found.
  * It does not look at the PATH directories before the match.
@@ -565,7 +565,7 @@ static NSString *path_hint(int argc, char **argv, char **envp, const char *home)
  * Modelled on process_args() in the fork macos-sudo-touchid-context
  * (MIT License, Copyright (c) 2026 Lauri Gates).
  */
-char **tidcmd_exec_environment(void) {
+char **tid_look_exec_environment(void) {
     int argc = *_NSGetArgc();
     char **argv = *_NSGetArgv();
     int mib[3] = {CTL_KERN, KERN_PROCARGS2, getpid()};
@@ -680,7 +680,7 @@ static BOOL sudoers_mentions(NSString *file, NSArray<NSString *> *words, NSMutab
  * Ported from read_sudo_policy() in the fork macos-sudo-touchid-context
  * (MIT License, Copyright (c) 2026 Lauri Gates).
  */
-BOOL tidcmd_policy_uses_path(const char *sudoConf, const char *sudoers) {
+BOOL tid_look_policy_uses_path(const char *sudoConf, const char *sudoers) {
     struct stat st;
     if (stat(sudoConf, &st) == 0) {
         NSData *data = [NSData dataWithContentsOfFile:@(sudoConf)];
@@ -733,7 +733,7 @@ static NSString *requesting_processes(void) {
  * argv and envp are sudo's, as exec laid them out; envp may be NULL (see
  * path_hint).
  */
-NSString *tidcmd_build_prompt(int argc, char **argv, char **envp, const char *home) {
+NSString *tid_look_build_prompt(int argc, char **argv, char **envp, const char *home) {
     return [NSString stringWithFormat:@"Command:\n%@\n\n%@Directory:\n%@\n\nRequested by:\n%@\n\n",
         command_line(argc, argv),
         path_hint(argc, argv, envp, home),
@@ -748,11 +748,11 @@ NSString *tidcmd_build_prompt(int argc, char **argv, char **envp, const char *ho
  * instead of raising a password dialog. The call is private API, so if it is
  * ever missing this reports "not usable" and sudo asks for the password.
  */
-BOOL tidcmd_touchid_usable(uid_t uid) {
+BOOL tid_look_touchid_usable(uid_t uid) {
     LAContext *context = [[LAContext alloc] init];
     SEL sel = NSSelectorFromString(@"evaluatePolicy:options:error:");
     if (![context respondsToSelector:sel]) {
-        os_log_error(tidcmd_log(), "LAContext lacks evaluatePolicy:options:error:");
+        os_log_error(tid_look_log(), "LAContext lacks evaluatePolicy:options:error:");
         return NO;
     }
     NSDictionary *options = @{
@@ -766,7 +766,7 @@ BOOL tidcmd_touchid_usable(uid_t uid) {
     if (result) return YES;
     /* "would need UI" means Touch ID is available; anything else means it is not. */
     if (error.code == LAErrorNotInteractive) return YES;
-    os_log_debug(tidcmd_log(), "Touch ID not usable: %ld", (long)error.code);
+    os_log_debug(tid_look_log(), "Touch ID not usable: %ld", (long)error.code);
     return NO;
 }
 
@@ -776,18 +776,18 @@ BOOL tidcmd_touchid_usable(uid_t uid) {
  * digits). 0 means no timeout. Without the option, or with an invalid value,
  * it is kDefaultTimeout. Unknown options are logged and ignored.
  */
-unsigned tidcmd_timeout(int argc, const char **argv) {
+unsigned tid_look_timeout(int argc, const char **argv) {
     static const char key[] = "timeout=";
     unsigned timeout = kDefaultTimeout;
     for (int i = 0; i < argc && argv[i]; i++) {
         if (strncmp(argv[i], key, strlen(key)) != 0) {
-            os_log_error(tidcmd_log(), "ignoring unknown option %{public}s", argv[i]);
+            os_log_error(tid_look_log(), "ignoring unknown option %{public}s", argv[i]);
             continue;
         }
         const char *value = argv[i] + strlen(key);
         size_t digits = strspn(value, "0123456789");
         if (digits == 0 || digits > 4 || value[digits] != '\0' || atoi(value) > kMaxTimeout) {
-            os_log_error(tidcmd_log(), "ignoring %{public}s: expected 0 to %d seconds", argv[i], kMaxTimeout);
+            os_log_error(tid_look_log(), "ignoring %{public}s: expected 0 to %d seconds", argv[i], kMaxTimeout);
             continue;
         }
         timeout = (unsigned)atoi(value);
@@ -809,18 +809,18 @@ unsigned tidcmd_timeout(int argc, const char **argv) {
  * AuthorizationDismiss() is private API (AuthorizationPriv.h). If it is ever
  * missing, the dialog waits for an answer without a time limit.
  */
-OSStatus tidcmd_authorize(const char *rightName, const char *prompt, unsigned timeout) {
+OSStatus tid_look_authorize(const char *rightName, const char *prompt, unsigned timeout) {
     AuthorizationRef authorization = NULL;
     OSStatus status = AuthorizationCreate(NULL, NULL, kAuthorizationFlagDefaults, &authorization);
     if (status != errAuthorizationSuccess) {
-        os_log_error(tidcmd_log(), "AuthorizationCreate failed: %d", (int)status);
+        os_log_error(tid_look_log(), "AuthorizationCreate failed: %d", (int)status);
         return status;
     }
 
     OSStatus (*dismiss)(void) = NULL;
     if (timeout > 0) {
         dismiss = (OSStatus (*)(void))dlsym(RTLD_DEFAULT, "AuthorizationDismiss");
-        if (!dismiss) os_log_error(tidcmd_log(), "AuthorizationDismiss is missing; the dialog has no timeout");
+        if (!dismiss) os_log_error(tid_look_log(), "AuthorizationDismiss is missing; the dialog has no timeout");
     }
 
     AuthorizationItem right = {rightName, 0, NULL, 0};
@@ -841,11 +841,11 @@ OSStatus tidcmd_authorize(const char *rightName, const char *prompt, unsigned ti
     dispatch_time_t deadline = dismiss ?
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)timeout * NSEC_PER_SEC) : DISPATCH_TIME_FOREVER;
     if (dispatch_semaphore_wait(answered, deadline) != 0) {
-        os_log(tidcmd_log(), "no answer after %u seconds; dismissing the dialog", timeout);
+        os_log(tid_look_log(), "no answer after %u seconds; dismissing the dialog", timeout);
         for (BOOL first = YES; ; first = NO) {
             OSStatus dismissed = dismiss();
             if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, kDismissRetry * NSEC_PER_SEC)) == 0) break;
-            if (first) os_log_error(tidcmd_log(), "the dialog did not close (%d); dismissing it again", (int)dismissed);
+            if (first) os_log_error(tid_look_log(), "the dialog did not close (%d); dismissing it again", (int)dismissed);
         }
     }
     AuthorizationFree(authorization, kAuthorizationFlagDefaults);
@@ -853,18 +853,18 @@ OSStatus tidcmd_authorize(const char *rightName, const char *prompt, unsigned ti
 }
 
 static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
-    unsigned timeout = tidcmd_timeout(argc, argv);
+    unsigned timeout = tid_look_timeout(argc, argv);
 
     /* The account sudo asks about, as PAM names it. */
     const char *user = NULL;
     if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !user) {
-        os_log_error(tidcmd_log(), "PAM gave no user name");
+        os_log_error(tid_look_log(), "PAM gave no user name");
         return PAM_AUTHINFO_UNAVAIL;
     }
     struct passwd entry, *account = NULL;
     char storage[4096];
     if (getpwnam_r(user, &entry, storage, sizeof storage, &account) != 0 || !account) {
-        os_log_error(tidcmd_log(), "no account entry for the PAM user");
+        os_log_error(tid_look_log(), "no account entry for the PAM user");
         return PAM_AUTHINFO_UNAVAIL;
     }
 
@@ -881,7 +881,7 @@ static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
      * with targetpw or runaspw, or from a shell switched to another user.
      */
     if (account->pw_uid != session.ai_auid) {
-        os_log(tidcmd_log(), "user %d is not the session owner %d", (int)account->pw_uid, (int)session.ai_auid);
+        os_log(tid_look_log(), "user %d is not the session owner %d", (int)account->pw_uid, (int)session.ai_auid);
         return PAM_AUTH_ERR;
     }
 
@@ -891,16 +891,16 @@ static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
         return PAM_AUTHINFO_UNAVAIL;
     }
 
-    if (!tidcmd_touchid_usable(account->pw_uid)) {
+    if (!tid_look_touchid_usable(account->pw_uid)) {
         return PAM_AUTH_ERR;
     }
 
     /* Read here, as root, which can read sudoers. */
-    char **env = tidcmd_policy_uses_path("/etc/sudo.conf", "/etc/sudoers") ? tidcmd_exec_environment() : NULL;
-    const char *prompt = tidcmd_build_prompt(*_NSGetArgc(), *_NSGetArgv(), env, account->pw_dir).UTF8String;
+    char **env = tid_look_policy_uses_path("/etc/sudo.conf", "/etc/sudoers") ? tid_look_exec_environment() : NULL;
+    const char *prompt = tid_look_build_prompt(*_NSGetArgc(), *_NSGetArgv(), env, account->pw_dir).UTF8String;
     free(env);
-    OSStatus status = tidcmd_authorize("com.apple.security.sudo", prompt, timeout);
-    os_log_debug(tidcmd_log(), "authorization result: %d", (int)status);
+    OSStatus status = tid_look_authorize("com.apple.security.sudo", prompt, timeout);
+    os_log_debug(tid_look_log(), "authorization result: %d", (int)status);
     return status == errAuthorizationSuccess ? PAM_SUCCESS : PAM_AUTH_ERR;
 }
 
@@ -908,7 +908,7 @@ static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
  * An exception left to escape would end sudo for everyone who has to
  * authenticate, while root's sudo, which is not asked to, still starts. So it
  * is caught, and sudo asks for the password instead. Every exception that can
- * reach here is thrown before the request is sent (tidcmd_authorize throws
+ * reach here is thrown before the request is sent (tid_look_authorize throws
  * none), so no request is left pending.
  */
 EXPORT PAM_EXTERN int
@@ -917,9 +917,9 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) 
         @try {
             return authenticate(pamh, argc, argv);
         } @catch (NSException *e) {
-            os_log_error(tidcmd_log(), "exception %{public}@: %@", e.name, e.reason);
+            os_log_error(tid_look_log(), "exception %{public}@: %@", e.name, e.reason);
         } @catch (id e) {
-            os_log_error(tidcmd_log(), "exception: %@", e);
+            os_log_error(tid_look_log(), "exception: %@", e);
         }
         return PAM_AUTHINFO_UNAVAIL;
     }

@@ -7,7 +7,7 @@
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-work=$(mktemp -d "${TMPDIR:-/tmp}/pam_tidcmd_render.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/pam_tid_look_render.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 failures=0
 status=0
@@ -36,12 +36,12 @@ said() { case $out in *"$1"*) return 0 ;; esac; return 1; }
 lacks() { ! grep -q "$1" "$2"; }
 
 sum=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-url=https://github.com/samuelb/pam_tidcmd/archive/refs/tags/v1.22.333.tar.gz
-formula=$here/Formula/pam_tidcmd.rb
+url=https://github.com/samuelb/pam_tid_look/archive/refs/tags/v1.22.333.tar.gz
+formula=$here/Formula/pam_tid_look.rb
 
 check "render_formula.sh is executable, as the release runs it" [ -x "$here/render_formula.sh" ]
 render "$here/render_formula.sh" 1.22.333 "$sum" "$work/tap"
-rendered=$work/tap/Formula/pam_tidcmd.rb
+rendered=$work/tap/Formula/pam_tid_look.rb
 check "a release renders" [ "$status" = 0 ]
 check "  and prints the formula's path" [ "$out" = "$rendered" ]
 check "  with the tag's url" grep -qxF "  url \"$url\"" "$rendered"
@@ -69,10 +69,10 @@ cp "$here/render_formula.sh" "$work/copy/"
 for case in "another url:s|/refs/tags/v[0-9.]*[.]tar|/refs/heads/main.tar|" "two urls:/^  url /p" \
     "no sha256:/^  sha256 /d" "two sha256s:/^  sha256 /p"; do
     rm -rf "${work:?}/copy/out"
-    sed -e "${case#*:}" "$formula" >"$work/copy/Formula/pam_tidcmd.rb"
+    sed -e "${case#*:}" "$formula" >"$work/copy/Formula/pam_tid_look.rb"
     render "$work/copy/render_formula.sh" 1.2.3 "$sum" "$work/copy/out"
     check "a formula with ${case%%:*} is refused" [ "$status" = 1 ]
-    check "  and nothing is written" [ ! -e "$work/copy/out/Formula/pam_tidcmd.rb" ]
+    check "  and nothing is written" [ ! -e "$work/copy/out/Formula/pam_tid_look.rb" ]
 done
 
 echo

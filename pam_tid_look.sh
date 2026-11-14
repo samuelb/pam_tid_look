@@ -1,13 +1,13 @@
 #!/bin/bash
-# Puts pam_tidcmd into sudo, takes it out again, and gets sudo back if the
+# Puts pam_tid_look into sudo, takes it out again, and gets sudo back if the
 # module ever stops it from starting.
 #
-#   sudo pam_tidcmd install [--timeout SECONDS] [--yes]
-#   sudo pam_tidcmd uninstall [--yes]
-#   pam_tidcmd status
-#   pam_tidcmd rescue [--force]
+#   sudo pam_tid_look install [--timeout SECONDS] [--yes]
+#   sudo pam_tid_look uninstall [--yes]
+#   pam_tid_look status
+#   pam_tid_look rescue [--force]
 #
-# install copies the module to /Library/Security/pam_tidcmd and puts it in
+# install copies the module to /Library/Security/pam_tid_look and puts it in
 # /etc/pam.d/sudo_local in place of Apple's pam_tid.so. It changes nothing
 # unless sudo starts now and PAM can load the new sudo_local. After the
 # change it checks that sudo still starts, then asks you to approve a Touch ID
@@ -19,7 +19,7 @@
 # module's SHA-256 hash, then ask on the terminal before changing anything.
 # --yes answers yes in advance. Without a terminal and without --yes, they
 # refuse. The sudo_local they replace is kept in /etc/pam.d as
-# .sudo_local.pam_tidcmd-backup.<date-time>, the newest five.
+# .sudo_local.pam_tid_look-backup.<date-time>, the newest five.
 #
 # --timeout sets how long the Touch ID dialog waits for a fingerprint before
 # it closes and sudo asks for the password: 0 to 3600 seconds, 0 for no limit.
@@ -34,7 +34,7 @@
 # PAM can load sudo's config. rescue is for when sudo no longer starts: it
 # asks for an administrator password in a dialog, which does not go through
 # sudo, and replaces the module with Apple's pam_tid.so. Then sudo works with
-# Apple's Touch ID, and `sudo pam_tidcmd uninstall` can clean up. rescue only
+# Apple's Touch ID, and `sudo pam_tid_look uninstall` can clean up. rescue only
 # acts when sudo does not start as root, and root is not asked to
 # authenticate, so a module that crashes or hangs while it authenticates you
 # goes unnoticed: --force replaces the module even when sudo starts.
@@ -47,34 +47,34 @@ set -euo pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export PATH
 
-DEST_DIR=/Library/Security/pam_tidcmd
-MODULE=$DEST_DIR/pam_tidcmd.so
-PROBE=$DEST_DIR/pam_tidcmd_probe
-SCRIPT=$DEST_DIR/pam_tidcmd
-BROKEN=$DEST_DIR/.pam_tidcmd.so.broken # the module rescue replaced
+DEST_DIR=/Library/Security/pam_tid_look
+MODULE=$DEST_DIR/pam_tid_look.so
+PROBE=$DEST_DIR/pam_tid_look_probe
+SCRIPT=$DEST_DIR/pam_tid_look
+BROKEN=$DEST_DIR/.pam_tid_look.so.broken # the module rescue replaced
 APPLE_TID=/usr/lib/pam/pam_tid.so.2
 PAM_DIR=/etc/pam.d
 CONF=$PAM_DIR/sudo_local
 SUDO_POLICY=$PAM_DIR/sudo
-LOCK=/var/run/pam_tidcmd.lock
+LOCK=/var/run/pam_tid_look.lock
 OSASCRIPT=/usr/bin/osascript
 TTY=/dev/tty # where install and uninstall ask
 # Backups of sudo_local: this, a dot and the time (YYYYmmdd-HHMMSS). A dot
 # file, so that module_users() does not count one that names the module.
-BACKUP=$PAM_DIR/.sudo_local.pam_tidcmd-backup
+BACKUP=$PAM_DIR/.sudo_local.pam_tid_look-backup
 BACKUPS_KEPT=5
-TAG='#pam_tidcmd# '
+TAG='#pam_tid_look# '
 
 # Module fields ($3) naming Apple's module and this one. Brackets, not
 # backslashes, because awk -v would interpret backslashes.
 TID_RE='(^|/)pam_tid[.]so([.][0-9]+)?$'
-TIDCMD_RE='(^|/)pam_tidcmd[.]so$'
+TID_LOOK_RE='(^|/)pam_tid_look[.]so$'
 # An awk rule that splits each line into f[1..n] as OpenPAM reads it: OpenPAM
 # ends a line at the first #, even inside a word, so that is cut off first.
 # Fields are always tested through f, never through $1..$NF.
 # shellcheck disable=SC2016 # awk code
 FIELDS='{ line = $0; sub(/#.*/, "", line); n = split(line, f) }'
-DEFAULT_TIMEOUT=30 # kDefaultTimeout in pam_tidcmd.m
+DEFAULT_TIMEOUT=30 # kDefaultTimeout in pam_tid_look.m
 TOUCHID_WAIT=120   # seconds install waits for the Touch ID dialog to be answered
 
 # This script with symlinks resolved, and its directory. The files to install
@@ -225,7 +225,7 @@ take_lock() {
     exec 9>>"$LOCK" || die "Could not open $LOCK."
     umask "$mask"
     chmod 600 "$LOCK" # one made by an earlier version is readable by all
-    /usr/bin/lockf -s -t 0 9 || die "Another pam_tidcmd install or uninstall is running. Let it finish, then try again."
+    /usr/bin/lockf -s -t 0 9 || die "Another pam_tid_look install or uninstall is running. Let it finish, then try again."
 }
 
 # The module must not be replaceable by a non-root process. Each inspection
@@ -249,7 +249,7 @@ check_dirs() {
 # before making any.
 check_pam_dir() {
     local tmp
-    if ! tmp=$(mktemp "$PAM_DIR/.pam_tidcmd-write.XXXXXX" 2>/dev/null); then
+    if ! tmp=$(mktemp "$PAM_DIR/.pam_tid_look-write.XXXXXX" 2>/dev/null); then
         die "macOS does not let this process change $PAM_DIR, so nothing was changed." \
             "Run this from a terminal app that may administer this computer (macOS asks the first time) or" \
             "has Full Disk Access (System Settings > Privacy & Security). If sudo does not start, run" \
@@ -262,10 +262,10 @@ check_pam_dir() {
 
 # Modules are recognised by the module field of an auth line (f[3]), never by
 # a mention elsewhere on the line, such as in a comment.
-without_tidcmd() { # prints sudo_local ($1, default CONF) with this module removed and pam_tid.so restored
+without_tid_look() { # prints sudo_local ($1, default CONF) with this module removed and pam_tid.so restored
     local file=${1:-$CONF}
     [ -f "$file" ] || return 0
-    awk -v tag="$TAG" -v re="$TIDCMD_RE" "$FIELDS"'
+    awk -v tag="$TAG" -v re="$TID_LOOK_RE" "$FIELDS"'
         f[1] == "auth" && f[3] ~ re { next }
         index($0, tag) == 1 { print substr($0, length(tag) + 1); next }
         { print }
@@ -273,17 +273,17 @@ without_tidcmd() { # prints sudo_local ($1, default CONF) with this module remov
 }
 
 # Whether sudo_local has an active line for this module or a line it commented out.
-uses_tidcmd() {
-    [ -f "$CONF" ] && awk -v tag="$TAG" -v re="$TIDCMD_RE" "$FIELDS"'
+uses_tid_look() {
+    [ -f "$CONF" ] && awk -v tag="$TAG" -v re="$TID_LOOK_RE" "$FIELDS"'
         (f[1] == "auth" && f[3] ~ re) || index($0, tag) == 1 { found = 1 }
         END { exit !found }
     ' "$CONF"
 }
 
-# The last timeout= value on the current pam_tidcmd line, if any.
+# The last timeout= value on the current pam_tid_look line, if any.
 current_timeout() {
     [ -f "$CONF" ] || return 0
-    awk -v re="$TIDCMD_RE" "$FIELDS"'
+    awk -v re="$TID_LOOK_RE" "$FIELDS"'
         f[1] == "auth" && f[3] ~ re { for (i = 4; i <= n; i++) if (f[i] ~ /^timeout=/) t = substr(f[i], 9) }
         END { print t }
     ' "$CONF"
@@ -292,8 +292,8 @@ current_timeout() {
 # The new line takes the place of the pam_tid.so line, with its control flag.
 # Without one, it is added at the end as sufficient. $options goes after the
 # module path.
-with_tidcmd() { # prints sudo_local with pam_tid.so replaced by the module at $1
-    without_tidcmd | awk -v dest="$1" -v opts="$options" -v tag="$TAG" -v re="$TID_RE" "$FIELDS"'
+with_tid_look() { # prints sudo_local with pam_tid.so replaced by the module at $1
+    without_tid_look | awk -v dest="$1" -v opts="$options" -v tag="$TAG" -v re="$TID_RE" "$FIELDS"'
         f[1] == "auth" && f[3] ~ re {
             if (!placed) { printf "auth       %-14s %s%s\n", f[2], dest, opts; placed = 1 }
             print tag $0
@@ -323,8 +323,8 @@ module_users() {
     local f
     for f in "$PAM_DIR"/*; do
         [ -f "$f" ] || continue
-        case ${f##*/} in pam_tidcmd-check.*) continue ;; esac
-        if awk -v re="$TIDCMD_RE" "$FIELDS"' f[3] ~ re { found = 1; exit } END { exit !found }' "$f"; then
+        case ${f##*/} in pam_tid_look-check.*) continue ;; esac
+        if awk -v re="$TID_LOOK_RE" "$FIELDS"' f[3] ~ re { found = 1; exit } END { exit !found }' "$f"; then
             echo "$f"
         fi
     done
@@ -371,7 +371,7 @@ prune_backups() {
 # The probe next to this script, or the installed one.
 find_probe() {
     local p
-    for p in "$HERE/pam_tidcmd_probe" "$PROBE"; do
+    for p in "$HERE/pam_tid_look_probe" "$PROBE"; do
         if [ -x "$p" ]; then
             echo "$p"
             return 0
@@ -385,7 +385,7 @@ find_probe() {
 policy_loads() {
     local tmp status=0
     probe_error=
-    tmp=$(mktemp "$PAM_DIR/pam_tidcmd-check.XXXXXX") || {
+    tmp=$(mktemp "$PAM_DIR/pam_tid_look-check.XXXXXX") || {
         probe_error="Could not create a file in $PAM_DIR."
         return 1
     }
@@ -471,7 +471,7 @@ touchid_check() {
 
 # --- install -------------------------------------------------------------------
 
-FILES='pam_tidcmd.so pam_tidcmd_probe pam_tidcmd' # in DEST_DIR, the module first
+FILES='pam_tid_look.so pam_tid_look_probe pam_tid_look' # in DEST_DIR, the module first
 
 # Shows the module to install, $1, with its SHA-256 hash, and whether it
 # differs from the installed one.
@@ -480,7 +480,7 @@ show_module() {
     sum=$(/usr/bin/shasum -a 256 <"$1") ||
         die "Could not compute the module's SHA-256 hash, so nothing was changed."
     say "" "Module:     $MODULE" \
-        "            from $HERE/pam_tidcmd.so" \
+        "            from $HERE/pam_tid_look.so" \
         "            SHA-256 ${sum%% *}"
     if is_apple_module; then
         say "            replaces Apple's pam_tid.so, which rescue put there"
@@ -531,7 +531,7 @@ do_install() {
     need_root
     [ "$HERE" != "$DEST_DIR" ] || die "This is the installed copy, which can only uninstall. Run install from the build directory or from Homebrew."
     local name
-    for name in pam_tidcmd.so pam_tidcmd_probe; do
+    for name in pam_tid_look.so pam_tid_look_probe; do
         [ -f "$HERE/$name" ] || die "$HERE/$name not found. Run 'make' first."
     done
     user=${SUDO_USER:-}
@@ -544,7 +544,7 @@ do_install() {
 
     # One replacement line cannot keep the meaning of several pam_tid.so lines.
     local count
-    count=$(without_tidcmd | awk -v re="$TID_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { c++ } END { print c + 0 }')
+    count=$(without_tid_look | awk -v re="$TID_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { c++ } END { print c + 0 }')
     if [ "$count" -gt 1 ]; then
         die "$CONF has $count active pam_tid.so lines. Leave one and run this again."
     fi
@@ -577,35 +577,35 @@ do_install() {
     local staged
     staged=$(mktemp -d "$DEST_DIR/.staged.XXXXXX")
     add_temp "$staged"
-    cat "$HERE/pam_tidcmd.so" >"$staged/pam_tidcmd.so"
-    cat "$HERE/pam_tidcmd_probe" >"$staged/pam_tidcmd_probe"
-    cat "$SELF" >"$staged/pam_tidcmd"
+    cat "$HERE/pam_tid_look.so" >"$staged/pam_tid_look.so"
+    cat "$HERE/pam_tid_look_probe" >"$staged/pam_tid_look_probe"
+    cat "$SELF" >"$staged/pam_tid_look"
     for name in $FILES; do
         chmod -N "$staged/$name"
         chown root:wheel "$staged/$name"
     done
-    chmod 444 "$staged/pam_tidcmd.so"
-    chmod 555 "$staged/pam_tidcmd_probe" "$staged/pam_tidcmd"
+    chmod 444 "$staged/pam_tid_look.so"
+    chmod 555 "$staged/pam_tid_look_probe" "$staged/pam_tid_look"
 
     # Nothing is changed unless PAM can load the module and the new sudo_local.
-    PROBE_BIN=$staged/pam_tidcmd_probe
-    probe_error=$("$PROBE_BIN" module "$staged/pam_tidcmd.so" 2>&1) ||
+    PROBE_BIN=$staged/pam_tid_look_probe
+    probe_error=$("$PROBE_BIN" module "$staged/pam_tid_look.so" 2>&1) ||
         die "The module does not load, so nothing was changed:" "$probe_error"
     local shown=/dev/null # sudo_local as checked and shown
     if [ -f "$CONF" ]; then
         shown=$staged/sudo_local.shown
         cp -p "$CONF" "$shown"
     fi
-    policy_loads with_tidcmd "$staged/pam_tidcmd.so" ||
+    policy_loads with_tid_look "$staged/pam_tid_look.so" ||
         die "PAM could not load $CONF with the module in it ($probe_error), so nothing was changed." \
             "A line in it may name a module that does not load."
 
     # Show what changes, and ask.
-    with_tidcmd "$MODULE" >"$staged/sudo_local.new"
-    show_module "$staged/pam_tidcmd.so"
+    with_tid_look "$MODULE" >"$staged/sudo_local.new"
+    show_module "$staged/pam_tid_look.so"
     show_change "$shown" "$staged/sudo_local.new"
     say ""
-    confirm "Install pam_tidcmd?" || die "Nothing was changed."
+    confirm "Install pam_tid_look?" || die "Nothing was changed."
     conf_unchanged "$shown" ||
         die "$CONF changed while you were asked, so nothing was changed. Run install again to see the new change."
 
@@ -632,7 +632,7 @@ do_install() {
     for name in $FILES; do
         mv -f "$staged/$name" "$DEST_DIR/$name"
     done
-    write_conf with_tidcmd "$MODULE"
+    write_conf with_tid_look "$MODULE"
     PROBE_BIN=$PROBE
 
     say "Checking that PAM can load sudo's config."
@@ -682,7 +682,7 @@ remove_from_conf() {
     cp -p "$CONF" "$saved_conf"
     cleaned=$(mktemp "$PAM_DIR/.sudo_local.cleaned.XXXXXX")
     add_temp "$cleaned"
-    without_tidcmd "$saved_conf" >"$cleaned"
+    without_tid_look "$saved_conf" >"$cleaned"
 
     local reason cleaned_loads=1 kept="sudo starts with the module, so $CONF was left as it was and the module was kept."
     if [ -n "$PROBE_BIN" ] && ! policy_loads cat "$cleaned"; then
@@ -702,7 +702,7 @@ remove_from_conf() {
             "So $CONF is set aside, without the module, and sudo uses $default"
     fi
     say "" "Then the module's files in $DEST_DIR are removed, unless a file in $PAM_DIR still uses it." ""
-    confirm "Uninstall pam_tidcmd?" || die "Nothing was changed."
+    confirm "Uninstall pam_tid_look?" || die "Nothing was changed."
     conf_unchanged "$saved_conf" ||
         die "$CONF changed while you were asked, so nothing was changed. Run uninstall again to see the new change."
 
@@ -714,7 +714,7 @@ remove_from_conf() {
         write_conf cat "$cleaned"
         if sudo_starts; then
             pending=
-            say "Removed pam_tidcmd from $CONF, which now reads:" ""
+            say "Removed pam_tid_look from $CONF, which now reads:" ""
             sed 's/^/    /' "$CONF"
             return 0
         fi
@@ -728,7 +728,7 @@ remove_from_conf() {
 
     # sudo does not start either way. Second choice: no sudo_local, which is
     # how macOS comes. The rest of it is kept aside, for you to fix.
-    aside=$CONF.pam_tidcmd-disabled.$(timestamp)
+    aside=$CONF.pam_tid_look-disabled.$(timestamp)
     cp -p "$cleaned" "$aside"
     chmod 444 "$aside"
     rm -f "$CONF"
@@ -745,7 +745,7 @@ remove_from_conf() {
     if [ "$cleaned_loads" = 1 ]; then
         write_conf cat "$cleaned"
         rm -f "$aside"
-        still_broken="Removed pam_tidcmd from $CONF, but sudo does not start with or without $CONF, so the cause is elsewhere. $sudo_error"
+        still_broken="Removed pam_tid_look from $CONF, but sudo does not start with or without $CONF, so the cause is elsewhere. $sudo_error"
     else
         still_broken="$reason So $CONF was set aside as $aside. sudo does not start without it either, so there is another cause outside it. $sudo_error"
     fi
@@ -756,12 +756,12 @@ do_uninstall() {
     take_lock
     PROBE_BIN=$(find_probe)
 
-    if uses_tidcmd; then
+    if uses_tid_look; then
         check_pam_dir
         remove_from_conf # asks first
         keep_backup
     else
-        say "$CONF does not use pam_tidcmd."
+        say "$CONF does not use pam_tid_look."
         if [ -d "$DEST_DIR" ] && [ -z "$(module_users)" ]; then
             say "" "Uninstall removes the module's files in $DEST_DIR." ""
             confirm "Remove them?" || die "Nothing was changed."
@@ -776,7 +776,7 @@ do_uninstall() {
     fi
     if [ -d "$DEST_DIR" ]; then
         # Also what an install that was killed, or an older installer, left.
-        rm -f "$MODULE" "$PROBE" "$SCRIPT" "$BROKEN" "$DEST_DIR"/.pam_tidcmd*.previous "$DEST_DIR"/.pam_tidcmd.so.??????
+        rm -f "$MODULE" "$PROBE" "$SCRIPT" "$BROKEN" "$DEST_DIR"/.pam_tid_look*.previous "$DEST_DIR"/.pam_tid_look.so.??????
         rm -rf "$DEST_DIR"/.staged.?????? "$DEST_DIR"/.rescue.??????
         if rmdir "$DEST_DIR" 2>/dev/null; then
             say "Removed $DEST_DIR."
@@ -809,24 +809,24 @@ do_status() {
     if is_apple_module; then
         say "Module:     $MODULE" \
             "            replaced with Apple's pam_tid.so by rescue, so sudo uses Apple's Touch ID." \
-            "            To remove pam_tidcmd: sudo $0 uninstall. To install it again: $reinstall"
+            "            To remove pam_tid_look: sudo $0 uninstall. To install it again: $reinstall"
     elif [ -f "$MODULE" ]; then
         say "Module:     $MODULE"
-        if [ "$HERE" != "$DEST_DIR" ] && [ -f "$HERE/pam_tidcmd.so" ]; then
-            if cmp -s "$MODULE" "$HERE/pam_tidcmd.so"; then
-                say "            the same as $HERE/pam_tidcmd.so"
+        if [ "$HERE" != "$DEST_DIR" ] && [ -f "$HERE/pam_tid_look.so" ]; then
+            if cmp -s "$MODULE" "$HERE/pam_tid_look.so"; then
+                say "            the same as $HERE/pam_tid_look.so"
             else
-                say "            differs from $HERE/pam_tidcmd.so; to update it: sudo $0 install"
+                say "            differs from $HERE/pam_tid_look.so; to update it: sudo $0 install"
             fi
         fi
     else
         say "Module:     not installed"
     fi
     say "sudo_local: $CONF"
-    if [ -f "$CONF" ] && awk -v re="$TIDCMD_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { found = 1 } END { exit !found }' "$CONF"; then
-        awk -v re="$TIDCMD_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { print "            " $0 }' "$CONF"
+    if [ -f "$CONF" ] && awk -v re="$TID_LOOK_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { found = 1 } END { exit !found }' "$CONF"; then
+        awk -v re="$TID_LOOK_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { print "            " $0 }' "$CONF"
     else
-        say "            does not use pam_tidcmd"
+        say "            does not use pam_tid_look"
     fi
     if sudo_loads; then
         say "sudo:       PAM can load its config"
@@ -857,7 +857,7 @@ rescue_as_root() {
     local started=0
     if sudo_starts; then
         if [ "$force" = 0 ]; then
-            say "sudo starts, so there is nothing to rescue. To remove pam_tidcmd: sudo $SCRIPT uninstall" \
+            say "sudo starts, so there is nothing to rescue. To remove pam_tid_look: sudo $SCRIPT uninstall" \
                 "If sudo crashes or hangs while it authenticates you, run: $SCRIPT rescue --force"
             return 0
         fi
@@ -870,7 +870,7 @@ rescue_as_root() {
     [ -f "$APPLE_TID" ] || die "$APPLE_TID is missing, so there is nothing to replace the module with." \
         "See \"Break glass\" in the README."
     if [ "$started" = 1 ] && is_apple_module; then
-        say "$MODULE is already Apple's pam_tid.so, so pam_tidcmd is not what fails. See \"Break glass\" in the README."
+        say "$MODULE is already Apple's pam_tid.so, so pam_tid_look is not what fails. See \"Break glass\" in the README."
         return 0
     fi
 
@@ -889,20 +889,20 @@ rescue_as_root() {
     for kind in link copy; do
         if [ "$kind" = link ]; then
             what="a link to"
-            ln -s "$APPLE_TID" "$work/pam_tidcmd.so"
+            ln -s "$APPLE_TID" "$work/pam_tid_look.so"
         else
             what="a copy of"
-            cat "$APPLE_TID" >"$work/pam_tidcmd.so"
-            chown root:wheel "$work/pam_tidcmd.so"
-            chmod 444 "$work/pam_tidcmd.so"
+            cat "$APPLE_TID" >"$work/pam_tid_look.so"
+            chown root:wheel "$work/pam_tid_look.so"
+            chmod 444 "$work/pam_tid_look.so"
         fi
-        mv -f "$work/pam_tidcmd.so" "$MODULE"
+        mv -f "$work/pam_tid_look.so" "$MODULE"
         if sudo_starts; then
             say "sudo starts. $MODULE is now $what Apple's $APPLE_TID," \
                 "so sudo uses Apple's Touch ID, without the command in the dialog."
             ! exists "$BROKEN" || say "The module it replaced is kept as $BROKEN."
-            say "" "To remove pam_tidcmd: sudo $SCRIPT uninstall" \
-                "To install a working build again: sudo pam_tidcmd install"
+            say "" "To remove pam_tid_look: sudo $SCRIPT uninstall" \
+                "To install a working build again: sudo pam_tid_look install"
             return 0
         fi
     done
@@ -934,7 +934,7 @@ do_rescue() {
     local result ok=1
     result=$("$OSASCRIPT" \
         -e 'on run argv' \
-        -e 'do shell script (quoted form of item 1 of argv) & " rescue" & item 2 of argv & " 2>&1" with prompt "pam_tidcmd is getting sudo to work again." with administrator privileges without altering line endings' \
+        -e 'do shell script (quoted form of item 1 of argv) & " rescue" & item 2 of argv & " 2>&1" with prompt "pam_tid_look is getting sudo to work again." with administrator privileges without altering line endings' \
         -e 'end run' "$runner" "$option" 2>&1) || ok=0
     say "$result"
     [[ $result != *"(-128)"* ]] || die "Cancelled; nothing was changed."

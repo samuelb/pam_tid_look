@@ -1,12 +1,12 @@
 /*
- * pam_tidcmd_probe: checks that PAM can load a module or a policy, without
+ * pam_tid_look_probe: checks that PAM can load a module or a policy, without
  * authenticating, showing anything or asking for anything.
  *
- *   pam_tidcmd_probe module PATH
+ *   pam_tid_look_probe module PATH
  *       Loads PATH the way OpenPAM does (dlopen with RTLD_NOW) and looks up
  *       pam_sm_authenticate.
  *
- *   pam_tidcmd_probe policy /etc/pam.d/NAME
+ *   pam_tid_look_probe policy /etc/pam.d/NAME
  *       Calls pam_start() for the service NAME. OpenPAM reads the policy and
  *       loads every module it names, following includes, in pam_start(). If
  *       one of them cannot be loaded, pam_start() fails, and so would sudo,

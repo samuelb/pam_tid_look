@@ -1,6 +1,6 @@
-pam_tidcmd.so
-pam_tidcmd_probe
-tidcmd_test
+pam_tid_look.so
+pam_tid_look_probe
+tid_look_test
 dialog_check
-tidcmd_test_sanitized
-tidcmd_test_sanitized.dSYM
+tid_look_test_sanitized
+tid_look_test_sanitized.dSYM

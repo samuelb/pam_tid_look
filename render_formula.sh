@@ -3,8 +3,8 @@
 #
 #   ./render_formula.sh VERSION SHA256 DIR
 #
-# writes DIR/Formula/pam_tidcmd.rb: Formula/pam_tidcmd.rb with url set to the
-# source archive of the tag vVERSION and sha256 to SHA256, that archive's
+# writes DIR/Formula/pam_tid_look.rb: Formula/pam_tid_look.rb with url set to
+# the source archive of the tag vVERSION and sha256 to SHA256, that archive's
 # checksum. VERSION is X.Y.Z, without the v. Nothing else in the formula
 # changes. The release workflow (.github/workflows/release.yml) publishes DIR
 # to samuelb/homebrew-tap.
@@ -31,8 +31,8 @@ sha256_re='^[0-9a-f]{64}$'
 [[ $version =~ $version_re ]] || die "VERSION must be X.Y.Z, not '$version'"
 [[ $sha256 =~ $sha256_re ]] || die "SHA256 must be 64 lowercase hex digits, not '$sha256'"
 
-src="$(cd "$(dirname "$0")" && pwd)/Formula/pam_tidcmd.rb"
-archive=https://github.com/samuelb/pam_tidcmd/archive/refs/tags
+src="$(cd "$(dirname "$0")" && pwd)/Formula/pam_tid_look.rb"
+archive=https://github.com/samuelb/pam_tid_look/archive/refs/tags
 url_line="  url \"$archive/v$version.tar.gz\""
 sha256_line="  sha256 \"$sha256\""
 
@@ -46,7 +46,7 @@ old_sha256_re='^  sha256 "[0-9a-f]{64}"$'
     die "$src needs exactly one line of the form: ${sha256_line/$sha256/<64 hex digits>}"
 
 mkdir -p "$dir/Formula"
-out=$dir/Formula/pam_tidcmd.rb
+out=$dir/Formula/pam_tid_look.rb
 sed -E -e "s|$url_re|$url_line|" -e "s|$old_sha256_re|$sha256_line|" "$src" >"$out.tmp"
 if ! grep -qxF "$url_line" "$out.tmp" || ! grep -qxF "$sha256_line" "$out.tmp"; then
     rm -f "$out.tmp"

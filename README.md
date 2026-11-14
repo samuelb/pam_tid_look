@@ -1,4 +1,6 @@
-# pam_tidcmd
+# pam_tid_look
+
+*Look before you touch.*
 
 Touch ID for `sudo` on macOS, like Apple's `pam_tid.so`, with one difference:
 the dialog shows what you are approving.
@@ -27,8 +29,8 @@ way is in [DESIGN.md](DESIGN.md).
 With Homebrew:
 
 ```
-brew install samuelb/tap/pam_tidcmd
-sudo "$(brew --prefix)/bin/pam_tidcmd" install
+brew install samuelb/tap/pam_tid_look
+sudo "$(brew --prefix)/bin/pam_tid_look" install
 ```
 
 Homebrew may first ask you to trust the tap (`brew trust`). `brew install` only
@@ -38,12 +40,12 @@ From the source:
 
 ```
 make
-sudo ./pam_tidcmd.sh install
+sudo ./pam_tid_look.sh install
 ```
 
 The first time, macOS asks whether your terminal app may administer the
 computer: allow it, since only then may root change `/etc/pam.d`. `install`
-copies the module to `/Library/Security/pam_tidcmd`, which only root can
+copies the module to `/Library/Security/pam_tid_look`, which only root can
 change, and puts it in `/etc/pam.d/sudo_local` in place of the `pam_tid.so`
 line. Before changing anything it checks that sudo starts and that PAM can load
 the module and the new config. Then it shows the change to `sudo_local` as a
@@ -65,24 +67,24 @@ default. A reinstall keeps the current value.
 To see what is installed, without sudo:
 
 ```
-pam_tidcmd status
+pam_tid_look status
 ```
 
 ## Update
 
-After `brew upgrade pam_tidcmd`, or `git pull` and `make`, run install again.
+After `brew upgrade pam_tid_look`, or `git pull` and `make`, run install again.
 Until then sudo keeps the module it has.
 
 ## Uninstall
 
 ```
-sudo "$(brew --prefix)/bin/pam_tidcmd" uninstall
-brew uninstall pam_tidcmd
+sudo "$(brew --prefix)/bin/pam_tid_look" uninstall
+brew uninstall pam_tid_look
 ```
 
-or `sudo ./pam_tidcmd.sh uninstall` from the source. If Homebrew's copy is
-already gone, `sudo /Library/Security/pam_tidcmd/pam_tidcmd uninstall` does the
-same.
+or `sudo ./pam_tid_look.sh uninstall` from the source. If Homebrew's copy is
+already gone, `sudo /Library/Security/pam_tid_look/pam_tid_look uninstall`
+does the same.
 
 `uninstall` shows the change to `sudo_local` and asks the same way, `--yes`
 included. Then it puts the `pam_tid.so` line back and checks that sudo starts.
@@ -100,17 +102,17 @@ These ways back do not use sudo. Try them in this order.
 **1. `rescue`.** In Terminal, without sudo:
 
 ```
-/Library/Security/pam_tidcmd/pam_tidcmd rescue
+/Library/Security/pam_tid_look/pam_tid_look rescue
 ```
 
-`pam_tidcmd rescue` from Homebrew or `./pam_tidcmd.sh rescue` from the source
-does the same. It asks for an administrator password in a macOS dialog, which
-does not go through sudo, and replaces the module with Apple's own
-`pam_tid.so`. sudo then works with Apple's Touch ID, without the command in
-the dialog. Then remove pam_tidcmd, or install a working build:
+`pam_tid_look rescue` from Homebrew or `./pam_tid_look.sh rescue` from the
+source does the same. It asks for an administrator password in a macOS
+dialog, which does not go through sudo, and replaces the module with Apple's
+own `pam_tid.so`. sudo then works with Apple's Touch ID, without the command
+in the dialog. Then remove pam_tid_look, or install a working build:
 
 ```
-sudo pam_tidcmd uninstall
+sudo pam_tid_look uninstall
 ```
 
 The rescue does not edit `/etc/pam.d/sudo_local`: macOS does not let a process
@@ -121,18 +123,18 @@ nothing wrong, because it checks sudo as root and root is not asked to
 authenticate. Run `rescue --force` then: it replaces the module even though
 sudo starts.
 
-**2. One line of AppleScript**, if pam_tidcmd's files are gone too. It puts a
+**2. One line of AppleScript**, if pam_tid_look's files are gone too. It puts a
 copy of Apple's module where `sudo_local` expects this one:
 
 ```
-osascript -e 'do shell script "mkdir -p /Library/Security/pam_tidcmd && cp /usr/lib/pam/pam_tid.so.2 /Library/Security/pam_tidcmd/.new && mv -f /Library/Security/pam_tidcmd/.new /Library/Security/pam_tidcmd/pam_tidcmd.so" with administrator privileges'
+osascript -e 'do shell script "mkdir -p /Library/Security/pam_tid_look && cp /usr/lib/pam/pam_tid.so.2 /Library/Security/pam_tid_look/.new && mv -f /Library/Security/pam_tid_look/.new /Library/Security/pam_tid_look/pam_tid_look.so" with administrator privileges'
 ```
 
 Then, with sudo working, take the line out and remove the files:
 
 ```
-sudo sed -i '' -e '/pam_tidcmd[.]so/d' -e 's/^#pam_tidcmd# //' /etc/pam.d/sudo_local
-sudo rm -r /Library/Security/pam_tidcmd
+sudo sed -i '' -e '/pam_tid_look[.]so/d' -e 's/^#pam_tid_look# //' /etc/pam.d/sudo_local
+sudo rm -r /Library/Security/pam_tid_look
 ```
 
 **3. Without a GUI session**, over ssh for example, there is no dialog. Give
@@ -141,7 +143,7 @@ sudo, then:
 
 ```
 su -
-/Library/Security/pam_tidcmd/pam_tidcmd rescue
+/Library/Security/pam_tid_look/pam_tid_look rescue
 exit
 dsenableroot -d
 ```
@@ -162,33 +164,33 @@ works with the password only. To get Touch ID back, write the file back
 without this module's line:
 
 ```
-sudo sh -c 'sed -e "/pam_tidcmd[.]so/d" -e "s/^#pam_tidcmd# //" /etc/pam.d/sudo_local.disabled > /etc/pam.d/sudo_local'
-sudo rm -r /Library/Security/pam_tidcmd
+sudo sh -c 'sed -e "/pam_tid_look[.]so/d" -e "s/^#pam_tid_look# //" /etc/pam.d/sudo_local.disabled > /etc/pam.d/sudo_local'
+sudo rm -r /Library/Security/pam_tid_look
 ```
 
 **Backups.** Install and uninstall keep the `sudo_local` they replace, the
 newest five, as hidden files next to it, named by date and time:
 
 ```
-ls -l /etc/pam.d/.sudo_local.pam_tidcmd-backup.*
+ls -l /etc/pam.d/.sudo_local.pam_tid_look-backup.*
 ```
 
-A backup taken while pam_tidcmd was installed names its module, and put back
-once the module is gone, it stops sudo from starting. `grep -L pam_tidcmd.so`
+A backup taken while pam_tid_look was installed names its module, and put back
+once the module is gone, it stops sudo from starting. `grep -L pam_tid_look.so`
 on the backups lists those that do not name it.
 
 `rescue` cannot put a backup back: macOS does not let a process started from
 its dialog change `/etc/pam.d`. With sudo working, for example after a rescue:
 
 ```
-sudo cp /etc/pam.d/.sudo_local.pam_tidcmd-backup.20261114-101500 /etc/pam.d/sudo_local
+sudo cp /etc/pam.d/.sudo_local.pam_tid_look-backup.20261114-101500 /etc/pam.d/sudo_local
 ```
 
 with the name `ls` shows. Without sudo, macOS Recovery can, as in way 4, with
 the Data volume's path in place of `/etc`:
 
 ```
-cp "/Volumes/Macintosh HD - Data/private/etc/pam.d/.sudo_local.pam_tidcmd-backup.20261114-101500" "/Volumes/Macintosh HD - Data/private/etc/pam.d/sudo_local"
+cp "/Volumes/Macintosh HD - Data/private/etc/pam.d/.sudo_local.pam_tid_look-backup.20261114-101500" "/Volumes/Macintosh HD - Data/private/etc/pam.d/sudo_local"
 ```
 
 A root shell from `su`, as in way 3, may be able to as well; that has not been
@@ -208,7 +210,7 @@ CI runs `make lint` and `make test` on a macOS runner for every push to `main`
 and every pull request (`.github/workflows/ci.yml`). It never runs
 `make dialog-check`.
 
-`Formula/pam_tidcmd.rb` is the Homebrew formula. Its `url` and `sha256` stand
+`Formula/pam_tid_look.rb` is the Homebrew formula. Its `url` and `sha256` stand
 in for a release's. To release, push a tag:
 
 ```

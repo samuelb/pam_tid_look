@@ -2,9 +2,9 @@
 
 Written 2026-11-13, against macOS 27.2.1 and sudo 1.9.17p2.
 
-`pam_tidcmd` is a PAM module for `sudo` on macOS. It authenticates with Touch ID
-like Apple's `pam_tid.so`, and adds the sudo command line to the dialog so you
-can see what you are approving.
+`pam_tid_look` is a PAM module for `sudo` on macOS. It authenticates with Touch
+ID like Apple's `pam_tid.so`, and adds the sudo command line to the dialog so
+you can see what you are approving.
 
 This file records why it is built the way it is. What was checked on a real
 install, and how, is under [Verification](#verification).
@@ -140,7 +140,7 @@ Other ways to close the dialog were rejected:
 The module takes one option, on its line in the PAM config:
 
 ```
-auth       sufficient     /Library/Security/pam_tidcmd/pam_tidcmd.so timeout=60
+auth       sufficient     /Library/Security/pam_tid_look/pam_tid_look.so timeout=60
 ```
 
 `timeout=SECONDS` is how long the dialog waits for an answer, a whole number
@@ -352,7 +352,7 @@ of their own, and `/etc/sudoers` cannot be read without root.
 than root can change the file found: the file, or any directory on the way to
 it, through symbolic links, is not owned by root, is group or world writable,
 or has an ACL entry that allows something. It is the rule of `check_dirs()` in
-`pam_tidcmd.sh`. So it is quiet for `/usr/bin/id` and warns for `~/evil/id`
+`pam_tid_look.sh`. So it is quiet for `/usr/bin/id` and warns for `~/evil/id`
 and for `/opt/homebrew/bin/nginx`.
 
 The `PATH` directories before the match are not checked. sudo searched before
@@ -370,7 +370,7 @@ looks in sudo's own dialog.
 The environment reader, the file check and the sudoers check follow code from
 the fork (`process_args()`, `root_only()`, `acl_allows()`,
 `read_sudo_policy()`, `sudoers_mentions()`), which is under the MIT License,
-© 2026 Lauri Gates. Comments in `pam_tidcmd.m` say where.
+© 2026 Lauri Gates. Comments in `pam_tid_look.m` say where.
 
 ## Build
 
@@ -407,14 +407,14 @@ that breaks later, there is a way back that does not use sudo (Break glass).
 
 ### Files
 
-The installer puts three files in `/Library/Security/pam_tidcmd`, owned by
+The installer puts three files in `/Library/Security/pam_tid_look`, owned by
 root:
 
 | File | Mode | Purpose |
 | --- | --- | --- |
-| `pam_tidcmd.so` | 444 | the module, named by absolute path in `sudo_local` |
-| `pam_tidcmd_probe` | 555 | the load check (see Checks) |
-| `pam_tidcmd` | 555 | a copy of the script, so that `uninstall` and `rescue` work without Homebrew or the build directory |
+| `pam_tid_look.so` | 444 | the module, named by absolute path in `sudo_local` |
+| `pam_tid_look_probe` | 555 | the load check (see Checks) |
+| `pam_tid_look` | 555 | a copy of the script, so that `uninstall` and `rescue` work without Homebrew or the build directory |
 
 `/usr/local/lib/pam` is the usual place for third-party modules, but on this
 machine `/usr/local/lib` is owned by the user. Any process running as that user
@@ -437,11 +437,11 @@ for a link before root opens it.
 
 ### Homebrew
 
-The formula (`Formula/pam_tidcmd.rb`) builds the module and the probe, puts
-them and the script in Homebrew's `libexec/pam_tidcmd`, and links
-`bin/pam_tidcmd` to the script. The script finds the files next to its own
+The formula (`Formula/pam_tid_look.rb`) builds the module and the probe, puts
+them and the script in Homebrew's `libexec/pam_tid_look`, and links
+`bin/pam_tid_look` to the script. The script finds the files next to its own
 resolved path, so the same script works from the build directory, from
-Homebrew and from `/Library/Security/pam_tidcmd`.
+Homebrew and from `/Library/Security/pam_tid_look`.
 
 The formula does not touch sudo. Homebrew does not run as root, and PAM must
 never load a module from Homebrew's prefix:
@@ -451,15 +451,16 @@ never load a module from Homebrew's prefix:
   `sudo_local` named one of them, the next of these commands would stop sudo
   from starting.
 
-So `sudo pam_tidcmd install` copies the files to `/Library/Security/pam_tidcmd`,
-as from the build directory. After `brew upgrade`, sudo keeps the copy it has
-until install is run again; `pam_tidcmd status` says when the two differ.
+So `sudo pam_tid_look install` copies the files to
+`/Library/Security/pam_tid_look`, as from the build directory. After
+`brew upgrade`, sudo keeps the copy it has until install is run again;
+`pam_tid_look status` says when the two differ.
 `brew uninstall` leaves sudo as it is, and the installed copy of the script can
 still uninstall.
 
 The formula is published in the tap `samuelb/tap`, the repository
-`samuelb/homebrew-tap`, so it installs as `samuelb/tap/pam_tidcmd`. A release
-is a tag `vX.Y.Z` on `samuelb/pam_tidcmd`. Pushing one runs
+`samuelb/homebrew-tap`, so it installs as `samuelb/tap/pam_tid_look`. A release
+is a tag `vX.Y.Z` on `samuelb/pam_tid_look`. Pushing one runs
 `.github/workflows/release.yml`:
 
 1. `make lint` and `make test` on the tagged commit, as CI runs them.
@@ -468,7 +469,7 @@ is a tag `vX.Y.Z` on `samuelb/pam_tidcmd`. Pushing one runs
    it. The formula is then installed from a local tap, built from source, and
    checked with `brew test`, `brew audit --strict` and `brew style`.
 3. The GitHub release, with notes generated from the commits.
-4. The formula is pushed to the tap as `Formula/pam_tidcmd.rb`, by the tap's
+4. The formula is pushed to the tap as `Formula/pam_tid_look.rb`, by the tap's
    reusable publish workflow, which the releases of the tap's other formulae
    use too.
 
@@ -499,9 +500,10 @@ repository and the secret.
 Only `/etc/pam.d/sudo_local` is edited, which is the file Apple provides for
 local changes and keeps across system updates.
 
-The existing `pam_tid.so` line is commented out with the prefix `#pam_tidcmd# `
-and the new line is put in its place, with the same control flag (`sufficient`
-when there was no `pam_tid.so` line and the new one is added at the end).
+The existing `pam_tid.so` line is commented out with the prefix
+`#pam_tid_look# ` and the new line is put in its place, with the same control
+flag (`sufficient` when there was no `pam_tid.so` line and the new one is added
+at the end).
 Changing a `required` line to `sufficient` would let Touch ID skip the rules
 after it.
 
@@ -524,8 +526,9 @@ The new config is written to a temporary file and renamed into place only if
 it was produced without error, so a failure cannot leave a partial file.
 
 Only one install or uninstall runs at a time, so that a run keeps its saved
-copies until it is done. The lock is a `flock` on `/var/run/pam_tidcmd.lock`, taken
-with `lockf(1)` on a descriptor the script holds. The kernel releases it when
+copies until it is done. The lock is a `flock` on
+`/var/run/pam_tid_look.lock`, taken with `lockf(1)` on a descriptor the script
+holds. The kernel releases it when
 the process ends, so a killed run cannot leave a stale lock to be removed by
 hand. Only root may open the lock file: `flock()` also works on a descriptor
 opened for reading, so if anyone could read the file, anyone could hold the
@@ -536,14 +539,15 @@ hold the lock after the script ends.
 
 Two checks are used before and after a change:
 
-- **The probe** (`pam_tidcmd_probe`) loads a module with `dlopen()`, as OpenPAM
-  does, or calls `pam_start()` for a policy, which loads every module the policy
-  names. It authenticates nobody and shows nothing. OpenPAM on macOS takes only
-  service names: a name containing `/` is refused. So a policy to check is
-  written to a temporary file in `/etc/pam.d`. A service without a policy file
-  falls back to `other` and loads, so the probe insists that the file exists.
-  The probe is built for the module's architectures; on Apple silicon it runs as
-  arm64e and loads the module's arm64e slice, as sudo does.
+- **The probe** (`pam_tid_look_probe`) loads a module with `dlopen()`, as
+  OpenPAM does, or calls `pam_start()` for a policy, which loads every module
+  the policy names. It authenticates nobody and shows nothing. OpenPAM on
+  macOS takes only service names: a name containing `/` is refused. So a
+  policy to check is written to a temporary file in `/etc/pam.d`. A service
+  without a policy file falls back to `other` and loads, so the probe insists
+  that the file exists. The probe is built for the module's architectures; on
+  Apple silicon it runs as arm64e and loads the module's arm64e slice, as sudo
+  does.
 - **`sudo -n /usr/bin/true` run as root.** Root needs no password, but sudo
   initialises PAM first ("Init authentication system regardless of whether we
   need a password", `check_user()` in sudoers' `check.c`), so this loads the
@@ -656,7 +660,7 @@ leaves sudo starting:
    comes, with the password and no Touch ID. A missing `sudo_local` is not an
    error, since `/etc/pam.d/sudo` includes it on every Mac and only the
    template exists until someone creates it. The rest of the file, without the
-   module, is kept as `sudo_local.pam_tidcmd-disabled.<date-time>` to be fixed
+   module, is kept as `sudo_local.pam_tid_look-disabled.<date-time>` to be fixed
    and moved back.
 4. If sudo does not start without `sudo_local` either, the cause is elsewhere
    (`/etc/pam.d/sudo`, sudoers). `sudo_local` is written back without the
@@ -680,7 +684,7 @@ the installed copy can run it.
 ### Backups
 
 When install or uninstall has changed `sudo_local` for good, the file it
-replaced is kept as `/etc/pam.d/.sudo_local.pam_tidcmd-backup.<date-time>`,
+replaced is kept as `/etc/pam.d/.sudo_local.pam_tid_look-backup.<date-time>`,
 with the original's owner and mode. A run that is undone, or that leaves the
 file as it was, keeps none. The newest five are kept. Older ones are deleted,
 but only regular files named exactly as the script names them, with
@@ -702,7 +706,7 @@ Where they are kept:
   the module was installed has one, so every later uninstall would keep them.
   That scan skips dot files. OpenPAM opens a policy only by its service name,
   so it never reads a backup either.
-- Not in `/Library/Security/pam_tidcmd`: uninstall removes that directory.
+- Not in `/Library/Security/pam_tid_look`: uninstall removes that directory.
 
 Putting one back needs a process that may write to `/etc/pam.d`: sudo, or the
 Terminal of macOS Recovery, on the Data volume. A root shell from `su`, in a
@@ -731,7 +735,7 @@ first.
 ### Break glass
 
 When the module keeps sudo from starting, getting it out needs root without
-sudo. `pam_tidcmd rescue`, run without sudo, gets root from Authorization
+sudo. `pam_tid_look rescue`, run without sudo, gets root from Authorization
 Services instead: it runs `do shell script … with administrator privileges`
 through `osascript`, which asks for an administrator's password in a dialog.
 StandardAdditions does that with the right `system.privilege.admin` and
@@ -745,8 +749,9 @@ permission and cannot be asked. The first version of rescue ran `uninstall`
 there, and the first write was refused (see Verification).
 
 So rescue leaves `/etc/pam.d` alone and changes the file `sudo_local` names
-instead. As root, it replaces `/Library/Security/pam_tidcmd/pam_tidcmd.so` with
-Apple's `/usr/lib/pam/pam_tid.so.2`:
+instead. As root, it replaces
+`/Library/Security/pam_tid_look/pam_tid_look.so` with Apple's
+`/usr/lib/pam/pam_tid.so.2`:
 
 1. first with a symbolic link to it, which stays current through macOS updates;
 2. if sudo does not start with that, with a copy. The copy is written to a new
@@ -755,7 +760,7 @@ Apple's `/usr/lib/pam/pam_tid.so.2`:
 
 Each is kept only if `sudo -n /usr/bin/true` as root then succeeds. If neither
 helps, the module was not the cause, and it is put back as it was. The module
-that stopped working is kept as `.pam_tidcmd.so.broken` for a later look.
+that stopped working is kept as `.pam_tid_look.so.broken` for a later look.
 
 That check runs sudo as root, which is not asked to authenticate, so it does
 not see a module that loads but crashes or hangs in `pam_sm_authenticate`, one
@@ -768,8 +773,8 @@ The line in `sudo_local` keeps its control flag, which came from the
 `pam_tid.so` line it replaced, so sudo then behaves as before the install:
 Apple's Touch ID, without the command. Apple's module imports no option
 parsing, so a `timeout=` on the line does no harm. Afterwards, with sudo
-working again, `sudo pam_tidcmd uninstall` takes the line out and removes the
-files, or `sudo pam_tidcmd install` puts a working build in. Both handle the
+working again, `sudo pam_tid_look uninstall` takes the line out and removes the
+files, or `sudo pam_tid_look install` puts a working build in. Both handle the
 link: install keeps it as a backup with `cp -P`, because `ln` would follow it
 to the system volume and fail.
 
@@ -828,7 +833,7 @@ For the timeout, it leaves the dialog alone and checks that it closes by itself
 after the timeout and that the process that asked then ends by itself:
 
 - the same right of its own, asked for through the module's own
-  `tidcmd_authorize()` with `timeout=3`. The request must end with
+  `tid_look_authorize()` with `timeout=3`. The request must end with
   `errAuthorizationDenied`, as a dismissed one does.
 - `sudo -k /usr/bin/true` with the timeout set in `sudo_local`. sudo has no
   terminal there, so after the dialog closes it fails to ask for a password and
@@ -879,7 +884,7 @@ behaviour too (`-fno-sanitize-recover`). That build uses the module's flags at
 go through `/usr/bin/atos`. Both targets are modelled on the fork's `justfile`
 (MIT License, © 2026 Lauri Gates). A null pointer dereference, a read past the
 end of a heap block and a signed overflow, each put into a copy of
-`tidcmd_build_prompt()`, made them fail (2026-11-14).
+`tid_look_build_prompt()`, made them fail (2026-11-14).
 
 `render_formula_test.sh`, also run by `make test`, checks the release's
 `render_formula.sh`: it sets `url` and `sha256` and changes no other line, and
@@ -893,7 +898,7 @@ check for one `url` line, or with `sha256` left as it was, the test fails.
 CI (`.github/workflows/ci.yml`) runs `make lint` and `make test` on GitHub's
 `macos-latest` runner for every push to `main` and every pull request. It
 never runs `make dialog-check`, which raises dialogs and runs sudo. On a
-runner, `tidcmd_test` is expected to skip the exception test, since the job
+runner, `tid_look_test` is expected to skip the exception test, since the job
 has no GUI session, and to report Touch ID as not usable; neither fails it.
 Should a runner have a GUI session owned by its user, the exception test runs
 and still shows no dialog. `install_test.sh` runs as the runner's user, which
@@ -906,7 +911,7 @@ Checked on 2026-11-13 on Apple silicon with macOS 27.2.1, with the module
 installed.
 
 - **The module loads in sudo.** The unified log shows the module's own
-  `pam_tidcmd` log line in the sudo process, and authd granting
+  `pam_tid_look` log line in the sudo process, and authd granting
   `com.apple.security.sudo` to `/usr/bin/sudo`.
 - **The prompt reaches the dialog.** authd copies the request's environment into
   the hints it sends to SecurityAgent (`auth_items_copy(engine->hints,
@@ -930,7 +935,7 @@ installed.
 - **Cancelling:** sudo prints `Password:` on the terminal. Ctrl-C at that prompt
   ends sudo with "a password is required".
 - **Timeout, on a right of its own.** `dialog_check` asked for its own right
-  through `tidcmd_authorize()` with `timeout=3`: the dialog closed by itself
+  through `tid_look_authorize()` with `timeout=3`: the dialog closed by itself
   after 3.2 seconds and the request returned `errAuthorizationDenied`. The
   module logged "no answer after 3 seconds; dismissing the dialog". With
   `timeout=0` instead, the dialog was still open after 13 seconds and the check
@@ -967,7 +972,7 @@ Checked on 2026-11-13, without root.
 
 - **A module that cannot be loaded stops `pam_start()`.**
   `/etc/pam.d/sudo_local.bak-20261113-193757`, left by an earlier experiment,
-  names a module that no longer exists. `pam_tidcmd_probe policy` fails on it
+  names a module that no longer exists. `pam_tid_look_probe policy` fails on it
   with "system error", and succeeds on the live `sudo_local` and on
   `/etc/pam.d/sudo`, which loads the installed module through the include.
   Policies given by path, in `/etc/pam.d` or elsewhere, were refused.
@@ -977,7 +982,7 @@ Checked on 2026-11-13, without root.
 - **Homebrew.** Homebrew 7.0.13 built and installed the formula from a local
   tap with a tarball of the working tree: a universal module, `brew test`,
   `brew audit --strict` and `brew style` passed. `brew uninstall` left
-  `sudo_local` and `/Library/Security/pam_tidcmd` as they were.
+  `sudo_local` and `/Library/Security/pam_tid_look` as they were.
 - **The rescue's AppleScript** passes the script's path, quoted, and returns
   its output and errors, checked without administrator privileges on `status`.
 - **Install as root works,** after macOS asked whether T3 Code may administer
@@ -1005,7 +1010,7 @@ Checked on 2026-11-13, without root.
   module cannot be loaded and passes once it can. `sudo_local` was not
   touched. `status` then reported the replaced module. With the module
   replaced by a seven-byte text file instead, the rescue did the same and
-  kept that file as `.pam_tidcmd.so.broken`.
+  kept that file as `.pam_tid_look.so.broken`.
 - **Uninstall after a rescue** put back the original `pam_tid.so` line and
   removed the files, link included (2026-11-14).
 - **CI and the release, without a remote** (2026-11-14). actionlint 1.7.12,
@@ -1019,11 +1024,11 @@ Checked on 2026-11-13, without root.
   run as the user, it got root from the administrator dialog, found that sudo
   started as root, replaced the module with a link to
   `/usr/lib/pam/pam_tid.so.2` all the same, kept the old module as
-  `.pam_tidcmd.so.broken`, and found that sudo started. `status` then reported
-  the replaced module, and `sudo ./pam_tidcmd.sh install` put the current
+  `.pam_tid_look.so.broken`, and found that sudo started. `status` then reported
+  the replaced module, and `sudo ./pam_tid_look.sh install` put the current
   build back, its Touch ID check approved. Not tested: a module that actually
   crashes or hangs while it authenticates.
-- **The lock file** `/var/run/pam_tidcmd.lock`, made 0644 by an earlier
+- **The lock file** `/var/run/pam_tid_look.lock`, made 0644 by an earlier
   version, was 0600 after a run of this one (2026-11-14).
 - **The install's Touch ID check.** Cancelling the dialog failed the check
   (sudo said "no password was provided"), the install was undone, `sudo_local`
@@ -1058,17 +1063,17 @@ Checked on 2026-11-13, without root.
 - **Break glass needs a GUI session** for `rescue`. Over ssh, it takes
   `dsenableroot` and `su`, or macOS Recovery.
 - **Homebrew upgrades do not reach sudo.** sudo keeps the installed copy until
-  `sudo pam_tidcmd install` is run again.
+  `sudo pam_tid_look install` is run again.
 - **Install and uninstall need permission to administer the computer** for the
   terminal app they run in, which macOS asks for the first time. `rescue` does
   without it, by not changing `/etc/pam.d`.
 
 ## License
 
-pam_tidcmd is under the MIT License (LICENSE), chosen 2026-11-14.
+pam_tid_look is under the MIT License (LICENSE), chosen 2026-11-14.
 
 Apple's `pam_tid.c` is under the Apple Public Source License, which binds
-Apple's code and any file that contains part of it. `pam_tidcmd.m` follows the
+Apple's code and any file that contains part of it. `pam_tid_look.m` follows the
 same sequence of calls, which Apple's API dictates, but is written
 independently. One statement was close to Apple's: the user lookup, with the
 same condition, variable names and message. It was rewritten on 2026-11-14 as

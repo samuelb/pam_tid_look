@@ -10,7 +10,7 @@ name: Release
 #             from source, and run its test, audit and style check;
 # 3. release: the GitHub release, with notes generated from the commits;
 # 4. publish: the formula goes to samuelb/homebrew-tap as
-#             Formula/pam_tidcmd.rb, through that repository's reusable
+#             Formula/pam_tid_look.rb, through that repository's reusable
 #             publish workflow.
 #
 # Needs the secret HOMEBREW_TAP_TOKEN: a token that can push to
@@ -36,7 +36,7 @@ jobs:
   verify:
     name: Verify
     # Only this repository publishes to samuelb/homebrew-tap.
-    if: github.repository == 'samuelb/pam_tidcmd'
+    if: github.repository == 'samuelb/pam_tid_look'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,8 +67,8 @@ jobs:
           sum="$(shasum -a 256 "$RUNNER_TEMP/source.tar.gz" | cut -d' ' -f1)"
           echo "$url: sha256 $sum"
           ./render_formula.sh "${TAG#v}" "$sum" rendered
-          grep -qxF "  url \"$url\"" rendered/Formula/pam_tidcmd.rb
-          cat rendered/Formula/pam_tidcmd.rb
+          grep -qxF "  url \"$url\"" rendered/Formula/pam_tid_look.rb
+          cat rendered/Formula/pam_tid_look.rb
 
       # The formula as users get it: downloaded by url, checked against the
       # checksum, built from source in Homebrew's environment, then tested.
@@ -81,11 +81,11 @@ jobs:
         run: |
           brew tap-new --no-git local/release-check
           brew trust --tap local/release-check
-          cp rendered/Formula/pam_tidcmd.rb "$(brew --repo local/release-check)/Formula/"
-          brew install --build-from-source local/release-check/pam_tidcmd
-          brew test local/release-check/pam_tidcmd
-          brew audit --strict local/release-check/pam_tidcmd
-          brew style rendered/Formula/pam_tidcmd.rb
+          cp rendered/Formula/pam_tid_look.rb "$(brew --repo local/release-check)/Formula/"
+          brew install --build-from-source local/release-check/pam_tid_look
+          brew test local/release-check/pam_tid_look
+          brew audit --strict local/release-check/pam_tid_look
+          brew style rendered/Formula/pam_tid_look.rb
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -119,6 +119,6 @@ jobs:
     uses: samuelb/homebrew-tap/.github/workflows/publish.yml@f009c289e3674e0aee1c6f0ca4d93199cdc6b8cb # main, 2026-11-13
     with:
       artifact_name: homebrew-tap-files
-      commit_message: "pam_tidcmd ${{ github.ref_name }}"
+      commit_message: "pam_tid_look ${{ github.ref_name }}"
     secrets:
       tap_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
