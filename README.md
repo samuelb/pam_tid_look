@@ -24,6 +24,12 @@ Authentication is left to Apple, exactly as `pam_tid.so` does it. The module
 only adds the text. It needs macOS 14 (Sonoma) or later. Why it is built this
 way is in [DESIGN.md](DESIGN.md).
 
+[macos-sudo-touchid-context](https://github.com/laurigates/macos-sudo-touchid-context)
+also shows the command, but checks the fingerprint itself with
+LocalAuthentication. pam_tid_look leaves that decision to Apple's own sudo
+request, and adds the PATH lookup, a dialog timeout, and an installer that
+undoes its change if sudo would break.
+
 ## Install
 
 With Homebrew:

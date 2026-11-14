@@ -16,8 +16,17 @@ Apple's `pam_tid.so` asks Authorization Services for the right
 description. The module reads no options from the PAM config line, so there is
 nothing to configure.
 
-The third-party Touch ID modules found during a web search accept a fixed
-`reason=` string in the PAM config. None showed the command being run.
+Most third-party Touch ID modules found during a web search accept a fixed
+`reason=` string in the PAM config, which cannot show the command being run.
+One does:
+[macos-sudo-touchid-context](https://github.com/laurigates/macos-sudo-touchid-context)
+shows the command and the requesting process. It authenticates with
+LocalAuthentication itself, switching the effective uid to the invoking user
+for the check, so the module decides whether you pass. This module keeps
+Apple's authorization request and only adds the text (see Authentication). It
+also shows where the command is found in PATH, escapes look-alike letters,
+closes the dialog after a timeout, and comes with an installer that checks
+its work and undoes it if sudo would break.
 
 ## Authentication
 
