@@ -1,7 +1,7 @@
 CC      = xcrun clang
 WARN    = -Wall -Wextra -Wno-unused-parameter
 CFLAGS  = -fobjc-arc -O2 $(WARN) -fvisibility=hidden -mmacosx-version-min=14.0
-LIBS    = -framework Foundation -framework LocalAuthentication -framework Security -lpam
+LIBS    = -framework Foundation -framework LocalAuthentication -framework Security -lpam -licucore
 # /usr/bin/sudo is arm64e on Apple silicon and x86_64 on Intel.
 ARCHS   = -arch arm64e -arch arm64 -arch x86_64
 

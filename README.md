@@ -7,6 +7,10 @@ the dialog shows what you are approving.
 Command:
 sudo brew services restart nginx
 
+Found in PATH:
+/opt/homebrew/bin/brew
+Can be changed without root.
+
 Directory:
 ~/code/myproject
 

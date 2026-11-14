@@ -18,11 +18,17 @@
 #import <Security/AuthorizationTags.h>
 #import <bsm/audit.h>
 #import <crt_externs.h>
+#import <dirent.h>
 #import <dlfcn.h>
+#import <errno.h>
 #import <libproc.h>
 #import <objc/message.h>
 #import <os/log.h>
 #import <pwd.h>
+#import <sys/acl.h>
+#import <sys/stat.h>
+#import <sys/sysctl.h>
+#import <unicode/uchar.h>
 
 #define PAM_SM_AUTH
 #define PAM_SM_ACCOUNT
@@ -50,6 +56,15 @@ enum {
     kRequesterHead = 120,    /* the nearest processes come first */
     kRequesterTail = 60,
     kMaxAncestors = 5,
+};
+
+/* ICU's script codes (UScriptCode), which are stable. uscript.h is not in the SDK. */
+enum {
+    kScriptArmenian = 3,
+    kScriptCherokee = 6,
+    kScriptCyrillic = 8,
+    kScriptGreek = 14,
+    kScriptLatin = 25,
 };
 
 enum {
@@ -82,11 +97,70 @@ static BOOL draws_nothing(uint32_t c) {
         (c >= 0x1D173 && c <= 0x1D17A) || (c >= 0xE0000 && c <= 0xE0FFF);
 }
 
+static int script_of(uint32_t c) {
+    return u_getIntPropertyValue((UChar32)c, UCHAR_SCRIPT);
+}
+
+/* Scripts with letters that look like Latin ones. */
+static BOOL latin_lookalike_script(int script) {
+    return script == kScriptCyrillic || script == kScriptGreek ||
+        script == kScriptArmenian || script == kScriptCherokee;
+}
+
+/* Whether NFKC changes the code point on its own. */
+static BOOL changed_by_nfkc(uint32_t c) {
+    uint32_t le = OSSwapHostToLittleInt32(c);
+    NSString *s = [[NSString alloc] initWithBytes:&le length:sizeof le encoding:NSUTF32LittleEndianStringEncoding];
+    return s && ![s.precomposedStringWithCompatibilityMapping isEqualToString:s];
+}
+
+/*
+ * Marks the code points that are drawn but look like others, so that
+ * /usr/bin/іd with a Cyrillic і does not pass for /usr/bin/id:
+ *
+ * - within a run of letters (marks included, so that a combining mark does
+ *   not end the run), the Cyrillic, Greek, Armenian and Cherokee ones if the
+ *   run also has a Latin letter;
+ * - every letter, mark or number that NFKC changes (fullwidth ｉ, math bold
+ *   𝐢, the ligature ﬁ, the Kelvin sign, Roman numeral ⅰ).
+ *
+ * A run entirely in one script passes: Cyrillic сс for cc is not caught.
+ */
+static void mark_lookalikes(const uint32_t *cp, NSUInteger count, BOOL *escape) {
+    static NSCharacterSet *letters, *alphanumerics;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        letters = [NSCharacterSet letterCharacterSet];          /* L* and M* */
+        alphanumerics = [NSCharacterSet alphanumericCharacterSet]; /* L*, M* and N* */
+    });
+
+    for (NSUInteger start = 0, end; start < count; start = end) {
+        BOOL latin = NO, other = NO;
+        for (end = start; end < count && [letters longCharacterIsMember:cp[end]]; end++) {
+            int script = script_of(cp[end]);
+            latin = latin || script == kScriptLatin;
+            other = other || latin_lookalike_script(script);
+        }
+        if (latin && other) {
+            for (NSUInteger i = start; i < end; i++) {
+                if (latin_lookalike_script(script_of(cp[i]))) escape[i] = YES;
+            }
+        }
+        if (end == start) end++;
+    }
+    for (NSUInteger i = 0; i < count; i++) {
+        if (cp[i] > 0x7f && [alphanumerics longCharacterIsMember:cp[i]] && changed_by_nfkc(cp[i])) {
+            escape[i] = YES;
+        }
+    }
+}
+
 /*
  * Make a string safe to show in the dialog: anything that is not a plainly
  * visible character (control characters, newlines, bidi overrides, zero-width
- * and other format characters, invisible letters and marks, unusual spaces) is
- * written as \u{XXXX} so it cannot rearrange or hide the rest of the text.
+ * and other format characters, invisible letters and marks, unusual spaces)
+ * or that looks like another character (see mark_lookalikes) is written as
+ * \u{XXXX}, so it cannot rearrange, hide or pass for the rest of the text.
  * Sets *changed if it did so.
  */
 static NSString *visible(NSString *s, BOOL *changed) {
@@ -101,13 +175,19 @@ static NSString *visible(NSString *s, BOOL *changed) {
     });
 
     NSData *utf32 = [s dataUsingEncoding:NSUTF32LittleEndianStringEncoding];
-    const uint32_t *cp = utf32.bytes;
     NSUInteger count = utf32.length / sizeof(uint32_t);
+    NSMutableData *host = [NSMutableData dataWithLength:count * sizeof(uint32_t)];
+    NSMutableData *lookalike = [NSMutableData dataWithLength:count * sizeof(BOOL)];
+    uint32_t *cp = host.mutableBytes;
+    for (NSUInteger i = 0; i < count; i++) cp[i] = OSSwapLittleToHostInt32(((const uint32_t *)utf32.bytes)[i]);
+    BOOL *escape = lookalike.mutableBytes;
+    mark_lookalikes(cp, count, escape);
+
     NSMutableString *out = [NSMutableString stringWithCapacity:s.length];
     for (NSUInteger i = 0; i < count; i++) {
-        uint32_t c = OSSwapLittleToHostInt32(cp[i]);
-        BOOL ok = (c >= 0x20 && c <= 0x7e) ||
-            (c > 0x7f && !draws_nothing(c) && [allowed longCharacterIsMember:c]);
+        uint32_t c = cp[i];
+        BOOL ok = !escape[i] && ((c >= 0x20 && c <= 0x7e) ||
+            (c > 0x7f && !draws_nothing(c) && [allowed longCharacterIsMember:c]));
         if (ok) {
             uint32_t le = OSSwapHostToLittleInt32(c);
             NSString *piece = [[NSString alloc] initWithBytes:&le length:sizeof le encoding:NSUTF32LittleEndianStringEncoding];
@@ -217,18 +297,404 @@ static NSString *command_line(int argc, char **argv) {
         kMaxCommandLength, kCommandHead, kCommandTail);
 }
 
-static NSString *working_directory(const char *home) {
-    char buf[PATH_MAX];
-    if (!getcwd(buf, sizeof buf)) return @"(unknown)";
-    NSString *cwd = visible(string_from_bytes(buf, NULL), NULL);
+/* A path made visible, with the user's home abbreviated to ~. */
+static NSString *visible_path(const char *path, const char *home) {
+    NSString *shown = visible(string_from_bytes(path, NULL), NULL);
     NSString *homeDir = home ? visible(string_from_bytes(home, NULL), NULL) : nil;
     if (homeDir.length > 1) {
-        if ([cwd isEqualToString:homeDir]) return @"~";
-        if ([cwd hasPrefix:[homeDir stringByAppendingString:@"/"]]) {
-            return [@"~" stringByAppendingString:[cwd substringFromIndex:homeDir.length]];
+        if ([shown isEqualToString:homeDir]) return @"~";
+        if ([shown hasPrefix:[homeDir stringByAppendingString:@"/"]]) {
+            return [@"~" stringByAppendingString:[shown substringFromIndex:homeDir.length]];
         }
     }
-    return cwd;
+    return shown;
+}
+
+static NSString *working_directory(const char *home) {
+    char buf[PATH_MAX];
+    return getcwd(buf, sizeof buf) ? visible_path(buf, home) : @"(unknown)";
+}
+
+/*
+ * The PATH hint. For a command word without a "/", sudo runs the first match
+ * in the caller's PATH, which the command line does not show:
+ * `PATH=~/evil:/usr/bin sudo id` reads "sudo id" and runs ~/evil/id. The hint
+ * names that file. It is left out whenever finding the command or its file
+ * is not clear-cut. See "The PATH hint" in DESIGN.md.
+ */
+
+/*
+ * sudo's short options, from parse_args() in sudo 1.9.17p2 as Apple ships it.
+ * A letter followed by ':' takes a value, by "::" an optional one.
+ * Taken from sudo_short_opts in the fork macos-sudo-touchid-context
+ * (MIT License, Copyright (c) 2026 Lauri Gates).
+ */
+static const char kSudoOptions[] = "Aa:BbC:c:D:Eeg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv";
+
+/*
+ * The options after which sudo still runs, as root, the file its PATH search
+ * found. Every other one leaves the hint out: -s and -i (a shell finds the
+ * command), -e (sudoedit), -l, -v, -K, -V and -h (nothing runs), -D and -R
+ * (another directory or root), -g and -U (another user), and -a, -c, -r and
+ * -t (BSD authentication, login classes and SELinux, not used on macOS).
+ * -u stays only with root.
+ */
+static const char kHintOptions[] = "ABbCEHkNnPpSTu";
+
+/* Whether sudo's -u value is root: the name, or "#" and a uid of zeros. */
+static BOOL names_root(const char *user) {
+    if (strcmp(user, "root") == 0) return YES;
+    return user[0] == '#' && user[1] && strspn(user + 1, "0") == strlen(user + 1);
+}
+
+/*
+ * The index in sudo's argv of the command word, or -1 when that is not
+ * clear-cut. Mirrors only as much of parse_args() as finding it needs:
+ * options end at "--" or at the first word that is not one, short flags
+ * group, and a value is the rest of the word or the next word (-Eu root,
+ * -uroot). VAR=value words between them are skipped, unless the word before
+ * is "--" (got_end_of_args). Long options leave the hint out, because
+ * getopt_long accepts abbreviations, and so do the letters kHintOptions
+ * leaves out, and sudoedit.
+ */
+static int command_index(int argc, char **argv) {
+    /* parse_args() edits when sudo's program name ends in "edit". */
+    const char *name = getprogname();
+    size_t nameLength = name ? strlen(name) : 0;
+    if (nameLength > 4 && strcmp(name + nameLength - 4, "edit") == 0) return -1;
+
+    BOOL user = NO;
+    int i = 1;
+    while (i < argc && argv[i]) {
+        const char *word = argv[i];
+        if (strcmp(word, "--") == 0) {
+            i++;
+            break;
+        }
+        if (word[0] == '-' && word[1] == '-') return -1;
+        if (word[0] == '-' && word[1]) {
+            i++;
+            for (const char *c = word + 1; *c; c++) {
+                const char *spec = *c == ':' ? NULL : strchr(kSudoOptions, *c);
+                if (!spec || !strchr(kHintOptions, *c)) return -1;
+                if (spec[1] != ':') continue;
+                const char *value = c[1] ? c + 1 : i < argc ? argv[i++] : NULL;
+                if (!value) return -1;
+                if (*c == 'u') {
+                    if (user || !names_root(value)) return -1;
+                    user = YES;
+                }
+                break;
+            }
+            continue;
+        }
+        BOOL endOfOptions = i > 1 && strcmp(argv[i - 1], "--") == 0;
+        if (!endOfOptions && word[0] != '/' && strchr(word, '=')) {
+            /* "=x" may not count as a variable; PATH=x may change the search. */
+            if (word[0] == '=' || strncmp(word, "PATH=", 5) == 0) return -1;
+            i++;
+            continue;
+        }
+        break;
+    }
+    return i < argc && argv[i] ? i : -1;
+}
+
+/*
+ * The PATH sudoers searches: the last non-empty PATH= in the environment
+ * exec passed (init_vars() in plugins/sudoers/sudoers.c), not the first,
+ * which getenv() would return.
+ */
+static const char *sudoers_path(char **envp) {
+    const char *path = NULL;
+    for (char **e = envp; e && *e; e++) {
+        if (strncmp(*e, "PATH=", 5) == 0 && (*e)[5]) path = *e + 5;
+    }
+    return path;
+}
+
+/*
+ * The file sudoers' find_path() picks for word, searching path as root, or
+ * NULL when that is not clear-cut. Each entry is tried as "entry/word", and
+ * the first regular file with an execute bit wins. sudo tries empty and "."
+ * entries only after all the others, so a match that only they could give
+ * leaves the hint out, as do a relative entry, a candidate too long for
+ * sudo and an error other than "no such file".
+ *
+ * sudoers searches as the user the command runs as, then as the caller
+ * (resolve_cmnd.c). For a command that runs as root, the first search is
+ * this one. The result is malloc'd.
+ */
+static char *path_lookup(const char *word, const char *path) {
+    for (const char *entry = path; ; ) {
+        size_t length = strcspn(entry, ":");
+        if (length > 0 && !(length == 1 && entry[0] == '.')) {
+            if (entry[0] != '/') return NULL;
+            char candidate[PATH_MAX];
+            if (length >= sizeof candidate ||
+                snprintf(candidate, sizeof candidate, "%.*s/%s", (int)length, entry, word) >= (int)sizeof candidate) {
+                return NULL;
+            }
+            struct stat st;
+            if (stat(candidate, &st) == 0) {
+                if (S_ISREG(st.st_mode) && (st.st_mode & 0111)) return strdup(candidate);
+            } else if (errno != ENOENT && errno != ENOTDIR) {
+                return NULL;
+            }
+        }
+        if (!entry[length]) return NULL;
+        entry += length + 1;
+    }
+}
+
+/*
+ * Whether an ACL entry of path itself (a symbolic link is not followed) allows
+ * something, which may let someone other than its owner change it. An ACL that
+ * cannot be read counts as one.
+ * Ported from acl_allows() in the fork macos-sudo-touchid-context
+ * (MIT License, Copyright (c) 2026 Lauri Gates).
+ */
+static BOOL acl_allows(const char *path) {
+    acl_t acl = acl_get_link_np(path, ACL_TYPE_EXTENDED);
+    if (!acl) return errno != ENOENT; /* ENOENT: no ACL */
+    BOOL allows = NO;
+    acl_entry_t entry;
+    for (int which = ACL_FIRST_ENTRY; !allows && acl_get_entry(acl, which, &entry) == 0; which = ACL_NEXT_ENTRY) {
+        acl_tag_t tag;
+        if (acl_get_tag_type(entry, &tag) != 0 || tag == ACL_EXTENDED_ALLOW) allows = YES;
+    }
+    acl_free(acl);
+    return allows;
+}
+
+/* Whether only root can change path itself: owned by root, not group or world writable, no allowing ACL. */
+static BOOL root_owned(const char *path, struct stat *st) {
+    return lstat(path, st) == 0 && st->st_uid == 0 && !(st->st_mode & (S_IWGRP | S_IWOTH)) && !acl_allows(path);
+}
+
+/*
+ * Whether only root can change what an absolute path names: "/", every
+ * directory on the way and the file itself, through symbolic links, pass
+ * root_owned(). The rule of check_dirs() in pam_tidcmd.sh. Anything that
+ * cannot be checked fails.
+ * Ported from root_only() in the fork macos-sudo-touchid-context
+ * (MIT License, Copyright (c) 2026 Lauri Gates).
+ */
+static BOOL root_only(const char *path) {
+    char at[PATH_MAX] = "/";  /* absolute, without symbolic links, and checked */
+    char rest[2 * PATH_MAX];  /* what is left to walk */
+    struct stat st;
+    if (!root_owned("/", &st) || strlcpy(rest, path, sizeof rest) >= sizeof rest) return NO;
+    for (int links = 0; rest[0]; ) {
+        size_t length = strcspn(rest, "/");
+        char part[PATH_MAX];
+        if (length >= sizeof part) return NO;
+        memcpy(part, rest, length);
+        part[length] = '\0';
+        size_t taken = length + (rest[length] == '/');
+        memmove(rest, rest + taken, strlen(rest + taken) + 1);
+        if (!part[0] || strcmp(part, ".") == 0) continue;
+        if (strcmp(part, "..") == 0) {
+            char *slash = strrchr(at, '/');
+            if (slash == at) at[1] = '\0'; /* the parent of "/x" and of "/" is "/" */
+            else *slash = '\0';
+            continue;
+        }
+        char next[PATH_MAX];
+        if (snprintf(next, sizeof next, "%s/%s", strcmp(at, "/") ? at : "", part) >= (int)sizeof next ||
+            !root_owned(next, &st)) {
+            return NO;
+        }
+        if (!S_ISLNK(st.st_mode)) {
+            strlcpy(at, next, sizeof at);
+            continue;
+        }
+        char target[PATH_MAX], joined[sizeof rest];
+        ssize_t n = readlink(next, target, sizeof target - 1);
+        if (n <= 0 || ++links > 32) return NO;
+        target[n] = '\0';
+        if (target[0] == '/') strlcpy(at, "/", sizeof at);
+        if (snprintf(joined, sizeof joined, "%s/%s", target, rest) >= (int)sizeof joined) return NO;
+        strlcpy(rest, joined, sizeof rest);
+    }
+    return YES;
+}
+
+/*
+ * The PATH section of the prompt, or "" when there is no hint. envp is the
+ * environment as exec passed it, or NULL when that is unknown or sudo does not
+ * search the caller's PATH (see tidcmd_policy_uses_path).
+ *
+ * The section warns when someone other than root can change the file found.
+ * It does not look at the PATH directories before the match.
+ */
+static NSString *path_hint(int argc, char **argv, char **envp, const char *home) {
+    int i = command_index(argc, argv);
+    const char *path = sudoers_path(envp);
+    if (i < 0 || !path || !argv[i][0] || strchr(argv[i], '/')) return @"";
+    char *match = path_lookup(argv[i], path);
+    if (!match) return @"";
+    NSString *shown = cut_middle(visible_path(match, home), kMaxContextLength, kDirectoryHead, kDirectoryTail);
+    BOOL safe = root_only(match);
+    free(match);
+    return [NSString stringWithFormat:@"Found in PATH:\n%@\n%@\n", shown, safe ? @"" : @"Can be changed without root.\n"];
+}
+
+/*
+ * sudo's environment as exec passed it, duplicates kept, as a NULL-terminated
+ * array in one allocation for free(). sudoers searched the PATH from there.
+ *
+ * It is read back from the process's own memory with KERN_PROCARGS2: argc,
+ * the executable path, NUL padding, the argument strings, the environment
+ * strings, then the kernel's "apple" strings (ptr_munge= and the like),
+ * which are returned too: none of them is a PATH. The environment array that
+ * sudo's main() got may have been changed since (dyld drops DYLD_ variables
+ * from it for a setuid program, setenv() and unsetenv() change it); the
+ * strings themselves stay where exec put them.
+ *
+ * NULL unless the arguments found there are sudo's argv, byte for byte and
+ * back to back, so that the environment is known to start where they end.
+ * That fails for an empty argv[0], which the padding hides, and for an
+ * argument sudo cut in place (--preserve-env=A,B; see original_arg), except
+ * the last one, which has no next one to measure against. Its pieces would
+ * be read as environment strings; but sudo only cuts an option, an option is
+ * last only when there is no command, and without one there is no hint.
+ * Modelled on process_args() in the fork macos-sudo-touchid-context
+ * (MIT License, Copyright (c) 2026 Lauri Gates).
+ */
+char **tidcmd_exec_environment(void) {
+    int argc = *_NSGetArgc();
+    char **argv = *_NSGetArgv();
+    int mib[3] = {CTL_KERN, KERN_PROCARGS2, getpid()};
+    size_t size = 0;
+    int count;
+    if (argc < 1 || !argv || sysctl(mib, 3, NULL, &size, NULL, 0) != 0 || size <= sizeof count) return NULL;
+    char *buffer = malloc(size), **env = NULL;
+    if (!buffer || sysctl(mib, 3, buffer, &size, NULL, 0) != 0 || size <= sizeof count) goto done;
+    memcpy(&count, buffer, sizeof count);
+    if (count != argc) goto done;
+
+    const char *p = buffer + sizeof count, *end = buffer + size;
+    p += strnlen(p, (size_t)(end - p));
+    while (p < end && !*p) p++;
+    for (int i = 0; i < argc; i++) {
+        size_t length = strnlen(p, (size_t)(end - p));
+        if (p + length == end || !argv[i] || strcmp(p, argv[i]) != 0) goto done;
+        if (i + 1 < argc && (!argv[i + 1] || (uintptr_t)argv[i + 1] - (uintptr_t)argv[i] != length + 1)) goto done;
+        p += length + 1;
+    }
+
+    size_t strings = 0, bytes = (size_t)(end - p);
+    for (const char *q = p; q < end; q += strnlen(q, (size_t)(end - q)) + 1) {
+        if (*q) strings++;
+    }
+    env = malloc((strings + 1) * sizeof *env + bytes + 1);
+    if (!env) goto done;
+    char *copy = (char *)(env + strings + 1);
+    memcpy(copy, p, bytes);
+    copy[bytes] = '\0';
+    size_t k = 0;
+    for (char *q = copy; q < copy + bytes; q += strlen(q) + 1) {
+        if (*q) env[k++] = q;
+    }
+    env[k] = NULL;
+done:
+    free(buffer);
+    return env;
+}
+
+/*
+ * Adds to found each of words that the sudoers file file, or a file it
+ * includes (#include, @include, #includedir, @includedir), mentions outside a
+ * comment, in any case. NO when it cannot be sure: a file it cannot read, an
+ * include it does not follow (anything but the directive, white space and one
+ * path without %h, quotes or backslashes), or nesting more than 8 deep.
+ * Looking for words rather than parsing sudoers errs one way only: a word
+ * where it sets nothing still counts, and the hint is left out.
+ * Ported from sudoers_mentions() in the fork macos-sudo-touchid-context
+ * (MIT License, Copyright (c) 2026 Lauri Gates).
+ */
+static BOOL sudoers_mentions(NSString *file, NSArray<NSString *> *words, NSMutableSet<NSString *> *found, int depth) {
+    if (depth > 8) return NO;
+    NSData *data = [NSData dataWithContentsOfFile:file];
+    if (!data) return NO;
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    NSCharacterSet *space = [NSCharacterSet whitespaceCharacterSet];
+    NSMutableCharacterSet *unfollowed = [NSMutableCharacterSet characterSetWithCharactersInString:@"%\"\\"];
+    [unfollowed formUnionWithCharacterSet:space];
+    for (NSString *raw in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+        NSString *line = [raw stringByTrimmingCharactersInSet:space];
+        NSString *directive = nil; /* longest first: "#include" is a prefix of "#includedir" */
+        for (NSString *d in @[@"#includedir", @"@includedir", @"#include", @"@include"]) {
+            if ([line hasPrefix:d]) {
+                directive = d;
+                break;
+            }
+        }
+        if (directive) {
+            NSString *rest = [line substringFromIndex:directive.length];
+            NSString *arg = [rest stringByTrimmingCharactersInSet:space];
+            if (!rest.length || ![space characterIsMember:[rest characterAtIndex:0]] || !arg.length ||
+                [arg rangeOfCharacterFromSet:unfollowed].location != NSNotFound) {
+                return NO;
+            }
+            NSString *target = [arg hasPrefix:@"/"] ? arg :
+                [file.stringByDeletingLastPathComponent stringByAppendingPathComponent:arg];
+            if (![directive hasSuffix:@"dir"]) {
+                if (!sudoers_mentions(target, words, found, depth + 1)) return NO;
+                continue;
+            }
+            DIR *dir = opendir(target.fileSystemRepresentation);
+            if (!dir) return NO;
+            BOOL ok = YES;
+            for (struct dirent *e; ok && (e = readdir(dir));) {
+                if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+                NSString *name = [NSFileManager.defaultManager stringWithFileSystemRepresentation:e->d_name
+                                                                                             length:strlen(e->d_name)];
+                NSString *entry = [target stringByAppendingPathComponent:name];
+                struct stat st;
+                if (stat(entry.fileSystemRepresentation, &st) != 0) ok = NO;
+                else if (S_ISREG(st.st_mode)) ok = sudoers_mentions(entry, words, found, depth + 1);
+            }
+            closedir(dir);
+            if (!ok) return NO;
+            continue;
+        }
+        if ([line hasPrefix:@"#"]) continue; /* a comment, or a "#uid" user, which sets no Defaults */
+        for (NSString *w in words) {
+            if ([line rangeOfString:w options:NSCaseInsensitiveSearch].location != NSNotFound) [found addObject:w];
+        }
+    }
+    return YES;
+}
+
+/*
+ * Whether sudo is known to search the caller's PATH, and to run a command
+ * without -u as root: sudoConf (sudo.conf, which may be missing) names no
+ * plugin, and sudoers and the files it includes mention neither secure_path,
+ * which sudo would search instead, nor runas_default, which would run the
+ * command as another user. Neither is set on macOS as it ships.
+ * Ported from read_sudo_policy() in the fork macos-sudo-touchid-context
+ * (MIT License, Copyright (c) 2026 Lauri Gates).
+ */
+BOOL tidcmd_policy_uses_path(const char *sudoConf, const char *sudoers) {
+    struct stat st;
+    if (stat(sudoConf, &st) == 0) {
+        NSData *data = [NSData dataWithContentsOfFile:@(sudoConf)];
+        if (!data) return NO;
+        NSString *text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+        for (NSString *raw in [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]]) {
+            NSString *line = [raw stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+            if ([line rangeOfString:@"plugin" options:NSCaseInsensitiveSearch | NSAnchoredSearch].location != NSNotFound) {
+                return NO;
+            }
+        }
+    } else if (errno != ENOENT) {
+        return NO;
+    }
+    NSMutableSet<NSString *> *found = [NSMutableSet set];
+    NSString *path = [NSFileManager.defaultManager stringWithFileSystemRepresentation:sudoers length:strlen(sudoers)];
+    return sudoers_mentions(path, @[@"secure_path", @"runas_default"], found, 0) && found.count == 0;
 }
 
 /* Names of the processes that led to this sudo, nearest first. */
@@ -260,10 +726,14 @@ static NSString *requesting_processes(void) {
 /*
  * Each label has a line of its own, so that a long value starts at the left
  * edge and wraps under itself, and a blank line separates the sections.
+ *
+ * argv and envp are sudo's, as exec laid them out; envp may be NULL (see
+ * path_hint).
  */
-NSString *tidcmd_build_prompt(int argc, char **argv, const char *home) {
-    return [NSString stringWithFormat:@"Command:\n%@\n\nDirectory:\n%@\n\nRequested by:\n%@\n\n",
+NSString *tidcmd_build_prompt(int argc, char **argv, char **envp, const char *home) {
+    return [NSString stringWithFormat:@"Command:\n%@\n\n%@Directory:\n%@\n\nRequested by:\n%@\n\n",
         command_line(argc, argv),
+        path_hint(argc, argv, envp, home),
         cut_middle(working_directory(home), kMaxContextLength, kDirectoryHead, kDirectoryTail),
         cut_middle(requesting_processes(), kMaxContextLength, kRequesterHead, kRequesterTail)];
 }
@@ -418,7 +888,10 @@ static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
         return PAM_AUTH_ERR;
     }
 
-    const char *prompt = tidcmd_build_prompt(*_NSGetArgc(), *_NSGetArgv(), pwd->pw_dir).UTF8String;
+    /* Read here, as root, which can read sudoers. */
+    char **env = tidcmd_policy_uses_path("/etc/sudo.conf", "/etc/sudoers") ? tidcmd_exec_environment() : NULL;
+    const char *prompt = tidcmd_build_prompt(*_NSGetArgc(), *_NSGetArgv(), env, pwd->pw_dir).UTF8String;
+    free(env);
     OSStatus status = tidcmd_authorize("com.apple.security.sudo", prompt, timeout);
     os_log_debug(tidcmd_log(), "authorization result: %d", (int)status);
     return status == errAuthorizationSuccess ? PAM_SUCCESS : PAM_AUTH_ERR;

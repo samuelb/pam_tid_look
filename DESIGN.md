@@ -161,7 +161,9 @@ actually asked to run, not something the caller supplies separately.
 
 The whole invocation is shown, sudo flags included. Parsing out "the command"
 was rejected: sudo's option grammar is easy to get wrong, and flags such as
-`-u`, `-E` and `-s` are part of what you are approving.
+`-u`, `-E` and `-s` are part of what you are approving. The PATH hint parses
+only enough to find the command word, and adds a section rather than changing
+this one.
 
 The program name is always shown as `sudo`, not as `argv[0]`. The caller picks
 `argv[0]` freely (`exec -a echo sudo rm -rf /`) and this sudo does not act on
@@ -183,12 +185,20 @@ nothing.
 Command:
 sudo brew services restart nginx
 
+Found in PATH:
+/opt/homebrew/bin/brew
+Can be changed without root.
+
 Directory:
 ~/code/myproject
 
 Requested by:
 zsh ← claude ← T3 Code (Beta)
 ```
+
+Found in PATH is there only for a command word without a `/` (see The PATH
+hint), and its last line only when someone other than root can change the
+file.
 
 Each label has a line of its own, so a long value starts at the left edge and
 wraps under itself, and a blank line separates the sections. The labels also
@@ -221,6 +231,22 @@ is normalised before display:
   (variation selectors, the combining grapheme joiner, Hangul fillers) and
   U+2800 BRAILLE PATTERN BLANK. Otherwise `/etc/hosts` followed by a variation
   selector would look like `/etc/hosts`.
+- Letters that look like other letters are written as `\u{XXXX}` too, so
+  `sudo /usr/bin/іd` with a Cyrillic `і` reads `'/usr/bin/\u{456}d'`. Within a
+  run of letters (marks included), Cyrillic, Greek, Armenian and Cherokee ones
+  are escaped when the run also has a Latin letter. Every letter, mark or
+  number that NFKC changes is escaped as well: fullwidth `ｉ`, math bold `𝐢`,
+  the Kelvin sign, the ligature `ﬁ`, Roman numeral `ⅰ`. A word in one script,
+  such as `/tmp/Übersicht/日本.txt` or `Привет.txt`, is shown as it is.
+  Escaping every non-ASCII character, as the fork does, was rejected: it makes
+  file names in other languages hard to read. The rule needs no parsing, so it
+  applies to every line shown, not only the program. It also escapes rarer
+  forms that NFKC changes, such as halfwidth katakana and `²`.
+- The script of a letter comes from ICU (`u_getIntPropertyValue()` in
+  libicucore, which Foundation itself links), by ICU's stable script numbers,
+  since `uscript.h` is not in the SDK. NFKC is Foundation's
+  `precomposedStringWithCompatibilityMapping`, applied to each code point on
+  its own, so that a letter followed by a combining accent still passes.
 - Bytes that are not valid UTF-8 are written as `\xNN`.
 - Arguments containing anything outside `A-Za-z0-9_@%+=:,./-` are wrapped in
   single quotes, so argument boundaries stay visible. The quoting is for
@@ -237,10 +263,10 @@ is normalised before display:
 - Arguments are separated by U+200E LEFT-TO-RIGHT MARK as well as a space.
   Without it, the quotes and space between two right-to-left arguments take
   their direction, and AppKit draws `cp 'א' 'ב'` as `cp 'ב' 'א'`.
-- The Directory and Requested by lines are cut the same way above 200
-  characters: the directory keeps its first 80 and last 100, the process list
-  its first 120 and last 60. A deep directory with escaped names would
-  otherwise make the dialog taller than the screen.
+- The Directory, Found in PATH and Requested by lines are cut the same way
+  above 200 characters: the directory and the file found keep their first 80
+  and last 100, the process list its first 120 and last 60. A deep directory
+  with escaped names would otherwise make the dialog taller than the screen.
 
 ### Directory and requesting processes
 
@@ -250,6 +276,101 @@ The working directory is shown with the user's home abbreviated to `~`.
 consecutive duplicates collapsed. Names come from the executable path and fall
 back to the kernel's process name. This is context, not proof: a process chooses
 its own executable name.
+
+### The PATH hint
+
+For a command word without a `/`, sudo runs the first match in the caller's
+`PATH`, and the command line does not say which file that is:
+`PATH=~/evil:/usr/bin sudo id` reads `sudo id` and runs `~/evil/id`. So the
+prompt names the file in a section of its own, after the command:
+
+```
+Found in PATH:
+~/evil/id
+Can be changed without root.
+```
+
+It is a hint, not a claim. The Command section stays as it is, and the hint is
+left out whenever finding the command or its file is not clear-cut.
+
+**The command word.** The module mirrors only as much of sudo's option rules
+(`parse_args()`) as finding it needs. Options end at `--` or at the first word
+that is not one. Short flags group, and a value is the rest of the word or the
+next word (`-Eu root`, `-uroot`). `VAR=value` words before the command are
+skipped, unless the word before is `--`; `argv[0]` does not count as that
+word. The hint is left out for:
+
+- long options, since `getopt_long` accepts abbreviations;
+- `-s` and `-i`, where a shell finds the command;
+- `-e` and `sudoedit` (a program name ending in `edit`, as `parse_args()`
+  checks it);
+- `-l`, `-v`, `-K`, `-V` and `-h`, which run nothing, and `-k` without a
+  command;
+- `-D` and `-R`, which change the directory or the root;
+- `-u` with anyone but root (`root`, or `#` and a uid of zeros), `-u` given
+  twice, `-g` and `-U`;
+- `-a`, `-c`, `-r` and `-t`, which macOS does not use, and unknown letters;
+- a `PATH=` word on the command line, and a word that starts with `=`.
+
+**Which PATH.** sudoers searches the last non-empty `PATH=` in the environment
+exec passed (`init_vars()` in `plugins/sudoers/sudoers.c`), not the first, which
+`getenv()` returns. A caller can give a name twice, which a shell cannot. The
+module reads that environment with `KERN_PROCARGS2` on its own process: the
+strings exec wrote, in order, duplicates kept, followed by the kernel's own
+`apple` strings, none of which is a `PATH`. `_NSGetEnviron()` was not used.
+It is an array of pointers, which dyld edits in a setuid program (it drops the
+`DYLD_` variables) and `setenv()` and `unsetenv()` change. Whether it still
+holds the strings sudoers read when PAM runs was not checked: that needs the
+module inside sudo. The hint is left out unless the arguments that
+`KERN_PROCARGS2` returns are sudo's argv, byte for byte and back to back: then
+the environment is known to start where they end. An empty `argv[0]` fails
+that, and so does an argument sudo cut in place, except the last one; sudo
+only cuts an option, and an option is last only when there is no command.
+
+**The search** is that of sudoers' `find_path()`. Each entry is tried as
+`entry/word`, and the first regular file with an execute bit wins. Empty and
+`.` entries are tried only after all the others, so a match that only they
+could give leaves the hint out. So do a relative entry, a name too long for
+sudo, and an error other than "no such file", such as a loop of symbolic links.
+
+**Whose search.** sudoers searches as the user the command runs as, then as the
+caller (`resolve_cmnd.c`). The module runs as root and sees every directory,
+so for a command that runs as root its first match is sudo's. Another user
+might not see into the match's directory and get a later one, which is why the
+hint is only given for root. Two sudoers settings change the search:
+`secure_path`, which sudo then searches instead of `PATH`, and
+`runas_default`, which runs a command without `-u` as another user. Neither is
+set on macOS as it ships. The module reads `/etc/sudo.conf` and `/etc/sudoers`
+with every file it includes, as root, and gives no hint if either word appears
+outside a comment, if `sudo.conf` names a plugin, or if it cannot read or
+follow a file. It looks for the words rather than parsing sudoers, so a mistake
+only leaves the hint out. **Unverified:** that the module can read sudoers
+inside sudo, and that macOS's own `/etc/sudoers` passes. The tests use files
+of their own, and `/etc/sudoers` cannot be read without root.
+
+**The warning.** "Can be changed without root." is added when someone other
+than root can change the file found: the file, or any directory on the way to
+it, through symbolic links, is not owned by root, is group or world writable,
+or has an ACL entry that allows something. It is the rule of `check_dirs()` in
+`pam_tidcmd.sh`. So it is quiet for `/usr/bin/id` and warns for `~/evil/id`
+and for `/opt/homebrew/bin/nginx`.
+
+The `PATH` directories before the match are not checked. sudo searched before
+the module does, so someone who can change an earlier directory can make the
+two searches differ (see Known limits). Only a warning for every such directory
+catches that, which is what the fork does. On a Mac with `~/.local/bin`,
+`~/.cargo/bin` and `/opt/homebrew/bin` before `/usr/bin`, that warning would
+show for almost every command, and a warning that always shows is not read.
+
+**Display.** The file is escaped like the rest (see Making the text safe to
+read), with the home abbreviated to `~`. The section adds three lines to the
+dialog, four with the warning: about 48 or 64 points. **Unverified:** how it
+looks in sudo's own dialog.
+
+The environment reader, the file check and the sudoers check follow code from
+the fork (`process_args()`, `root_only()`, `acl_allows()`,
+`read_sudo_policy()`, `sudoers_mentions()`), which is under the MIT License,
+© 2026 Lauri Gates. Comments in `pam_tidcmd.m` say where.
 
 ## Build
 
@@ -556,7 +677,10 @@ install and remove correctly.
 ## Testing
 
 `make test` covers what can run outside sudo: prompt formatting, escaping,
-truncation, and the Touch ID availability check. The availability check was also
+look-alike letters, truncation, the PATH hint, and the Touch ID availability
+check. The PATH tests give every environment and sudoers file themselves, and
+start the test program again with a name given twice to check how the
+environment is read back. The availability check was also
 confirmed to answer per user: usable for the logged-in user, not usable for root
 or a nonexistent uid.
 
@@ -742,6 +866,16 @@ Checked on 2026-11-13, without root.
   minutes per terminal. Commands run in that window show no dialog. Setting
   `Defaults timestamp_timeout=0` in sudoers makes every command prompt.
 - **Scripts.** `sudo ./script.sh` shows the script path, not its contents.
+- **The PATH hint can be raced.** sudo looks up the command before the module
+  does, and runs what it found then. Someone who can change a directory
+  earlier in `PATH` can plant a file there, remove it before the module looks,
+  so that the hint names a later match without a warning, and put it back
+  before sudo runs it. The hint does not check those directories (see The PATH
+  hint).
+- **Look-alikes within one script.** A word entirely in Cyrillic, such as `сс`
+  for `cc`, is shown as it is. So are Latin letters that resemble others
+  (dotless `ı`, `ɑ`), and punctuation and symbols such as the division slash
+  `∕`.
 - **No way out from the terminal.** While the dialog is open, Ctrl-C in the
   terminal does nothing. The dialog has to be answered or left to time out, or
   sudo killed with SIGKILL from elsewhere. This is sudo's behaviour (see
