@@ -104,6 +104,11 @@ sudo pam_tidcmd uninstall
 The rescue does not edit `/etc/pam.d/sudo_local`: macOS does not let a process
 started from that dialog change `/etc/pam.d`, even as root.
 
+If sudo starts but crashes or hangs while it authenticates you, `rescue` finds
+nothing wrong, because it checks sudo as root and root is not asked to
+authenticate. Run `rescue --force` then: it replaces the module even though
+sudo starts.
+
 **2. One line of AppleScript**, if pam_tidcmd's files are gone too. It puts a
 copy of Apple's module where `sudo_local` expects this one:
 

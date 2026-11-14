@@ -1,13 +1,21 @@
 /* Checks the parts of pam_tidcmd that can run outside sudo. Shows no dialog. */
 
 #import <Foundation/Foundation.h>
+#import <bsm/audit.h>
+#import <objc/runtime.h>
 #import <pwd.h>
+#import <security/pam_appl.h>
 
 NSString *tidcmd_build_prompt(int argc, char **argv, const char *home);
 BOOL tidcmd_touchid_usable(uid_t uid);
 unsigned tidcmd_timeout(int argc, const char **argv);
+int pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv);
 
 static int failures;
+
+static int no_conversation(int n, const struct pam_message **msg, struct pam_response **resp, void *data) {
+    return PAM_CONV_ERR;
+}
 
 /* The line after a label line, such as the command line after "Command:". */
 static NSString *section(NSString *prompt, NSString *label) {
@@ -182,6 +190,38 @@ int main(void) {
 
         printf("\nFull prompt for a plain command:\n---\n%s---\n",
             PROMPT("sudo", "brew", "services", "restart", "nginx").UTF8String);
+
+        /*
+         * An exception in the module must not end sudo. The private Touch ID
+         * check is made to throw; the module must give up so that sudo asks
+         * for the password. It shows no dialog: should the check not throw
+         * after all, authd refuses sudo's right at once outside sudo.
+         */
+        Method evaluate = class_getInstanceMethod(NSClassFromString(@"LAContext"),
+            NSSelectorFromString(@"evaluatePolicy:options:error:"));
+        auditinfo_addr_t session = {0};
+        BOOL owner = getaudit_addr(&session, sizeof session) == 0 && (session.ai_flags & 0x0010) &&
+            session.ai_auid == getuid();
+        struct pam_conv conv = {no_conversation, NULL};
+        pam_handle_t *pamh = NULL;
+        if (evaluate && owner &&
+            pam_start("tidcmd_test", getpwuid(getuid())->pw_name, &conv, &pamh) == PAM_SUCCESS) {
+            __block BOOL thrown = NO;
+            IMP original = method_setImplementation(evaluate,
+                imp_implementationWithBlock(^id(id context, NSInteger policy, NSDictionary *options, NSError **error) {
+                    thrown = YES;
+                    @throw [NSException exceptionWithName:@"TestException" reason:@"thrown by the test" userInfo:nil];
+                }));
+            int result = pam_sm_authenticate(pamh, 0, 0, NULL);
+            method_setImplementation(evaluate, original);
+            pam_end(pamh, PAM_SUCCESS);
+            check(thrown && result == PAM_AUTHINFO_UNAVAIL, @"an exception in the module makes sudo ask for the password",
+                [NSString stringWithFormat:@"%s, PAM result %d (wanted %d)", thrown ? "thrown" : "not thrown",
+                    result, PAM_AUTHINFO_UNAVAIL]);
+        } else {
+            printf("skip  an exception in the module makes sudo ask for the password\n"
+                   "      (needs a GUI session owned by this user)\n");
+        }
 
         BOOL usable = tidcmd_touchid_usable(getuid());
         printf("\nTouch ID usable for uid %d (non-interactive check): %s\n", getuid(), usable ? "yes" : "no");

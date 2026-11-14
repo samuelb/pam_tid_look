@@ -81,7 +81,11 @@ It never fails open.
 ### Result mapping
 
 Only `errAuthorizationSuccess` returns `PAM_SUCCESS`. Everything else, including
-cancelling the dialog and the dialog timing out, returns `PAM_AUTH_ERR`. With
+cancelling the dialog and the dialog timing out, returns `PAM_AUTH_ERR`. An
+Objective-C exception inside the module, such as one from the private Touch ID
+check after a macOS update, is caught and returns `PAM_AUTHINFO_UNAVAIL`;
+uncaught, it would end sudo for everyone who has to authenticate. Every
+exception that can happen is thrown before the request is sent. With
 the module configured as `sufficient`, sudo then continues to the normal
 password prompt. Cancelling returns `errAuthorizationCanceled` (-60006), and
 sudo was seen to ask for the password on the terminal.
@@ -299,6 +303,12 @@ module. The installer copies the contents into a directory that `mktemp -d`
 created as root inside the module's directory, removes any ACL, sets owner and
 mode, and renames each file into place.
 
+The script sets its own `PATH` to the system's directories. sudo can keep the
+caller's `PATH`, and GNU coreutils put first there have a `stat` and a `chmod`
+that take other options, so the ownership checks would misread them. Nothing
+is written under the caller's `TMPDIR` either: a file there could be swapped
+for a link before root opens it.
+
 ### Homebrew
 
 The formula (`Formula/pam_tidcmd.rb`) builds the module and the probe, puts
@@ -341,7 +351,9 @@ active was rejected because cancelling the first dialog would raise a second
 one.
 
 Lines are recognised by their module field only. A module name that appears in
-a comment or an option does not make a line count as either module. With more
+a comment or an option does not make a line count as either module. The fields
+are read as OpenPAM reads them, with the line cut at the first `#`, even inside
+a word, so `pam_tid.so#note` names `pam_tid.so`. With more
 than one active `pam_tid.so` line the installer refuses to change anything,
 because one replacement line cannot keep the meaning of several.
 
@@ -352,7 +364,9 @@ Only one install or uninstall runs at a time, so that a run keeps its backups
 until it is done. The lock is a `flock` on `/var/run/pam_tidcmd.lock`, taken
 with `lockf(1)` on a descriptor the script holds. The kernel releases it when
 the process ends, so a killed run cannot leave a stale lock to be removed by
-hand. The Touch ID check is started without the descriptor, so that it cannot
+hand. Only root may open the lock file: `flock()` also works on a descriptor
+opened for reading, so if anyone could read the file, anyone could hold the
+lock and keep install, uninstall and rescue from running. The Touch ID check is started without the descriptor, so that it cannot
 hold the lock after the script ends.
 
 ### Checks
@@ -454,8 +468,9 @@ with it. When sudo did not start to begin with, whatever the run has written
 is at least as good, so it stays.
 
 The files are deleted only after `sudo_local` no longer names the module, and
-not while another file in `/etc/pam.d` names it, since PAM could then no longer
-load that file. `uninstall` needs no files from the build or from Homebrew, so
+not while any file in `/etc/pam.d` still has an active line of any kind naming
+it, `sudo_local` included (uninstall removes only `auth` lines), since PAM
+could then no longer load that file. `uninstall` needs no files from the build or from Homebrew, so
 the installed copy can run it.
 
 ### macOS protects `/etc/pam.d`
@@ -504,6 +519,13 @@ Each is kept only if `sudo -n /usr/bin/true` as root then succeeds. If neither
 helps, the module was not the cause, and it is put back as it was. The module
 that stopped working is kept as `.pam_tidcmd.so.broken` for a later look.
 
+That check runs sudo as root, which is not asked to authenticate, so it does
+not see a module that loads but crashes or hangs in `pam_sm_authenticate`, one
+of the ways to lose sudo listed under What can lock you out. When sudo starts,
+rescue changes nothing unless it is run as `rescue --force`. Then it replaces
+the module all the same, keeps the result only if sudo still starts, and
+leaves a module that is already Apple's as it is.
+
 The line in `sudo_local` keeps its control flag, which came from the
 `pam_tid.so` line it replaced, so sudo then behaves as before the install:
 Apple's Touch ID, without the command. Apple's module imports no option
@@ -539,7 +561,9 @@ confirmed to answer per user: usable for the logged-in user, not usable for root
 or a nonexistent uid.
 
 `make test` also checks how the `timeout=` option is read, including the
-values that fall back to the default.
+values that fall back to the default, and that an exception thrown inside
+`pam_sm_authenticate` (the test makes the private Touch ID check throw)
+returns `PAM_AUTHINFO_UNAVAIL` instead of ending the process.
 
 `make dialog-check` checks that the prompt is drawn and that the dialog closes
 when the timeout runs out. For the prompt, it raises real dialogs for about two
@@ -576,8 +600,8 @@ Verification).
 which needs no root and shows no dialog. It sources the script and runs install
 and uninstall against a scratch directory, with fakes for the paths, the root
 and ownership steps, the probe, sudo and the Touch ID check. The fake probe
-follows includes and fails on a module that is missing or contains the word
-`BROKEN`; the fake sudo starts when the fake probe can load sudo's policy, as
+follows includes, cuts lines at `#` as OpenPAM does, and fails on a module
+that is missing or contains the word `BROKEN`; the fake sudo starts when the fake probe can load sudo's policy, as
 the real one does. It covers each rollback and each uninstall fallback above, a
 reinstall that fails and keeps the previous module, an install interrupted
 during the Touch ID check, and the lock. Breaking the rollback, a fallback or
@@ -587,8 +611,9 @@ the check before uninstalling makes it fail.
 place of sudo: approved, cancelled, ended by a signal, and unanswered, where it
 must give up after the wait and kill every process the check started. And it
 runs `rescue` with a fake `osascript`, and as root: the link, the copy when
-the fake probe refuses links, nothing to do, a module that is not the cause, a
-missing module, and install and uninstall afterwards. A read-only `/etc/pam.d`
+the fake probe refuses links, nothing to do, `--force` when sudo starts, a
+module that is not the cause, a missing module, and install and uninstall
+afterwards. A read-only `/etc/pam.d`
 stands in for the privacy protection. Before any test, the harness checks that
 the stubs replace every system path the script defines, and it refuses to run
 as root. The scripts under test run from a file,
@@ -697,6 +722,16 @@ Checked on 2026-11-13, without root.
   kept that file as `.pam_tidcmd.so.broken`.
 - **Uninstall after a rescue** put back the original `pam_tid.so` line and
   removed the files, link included (2026-11-14).
+- **`rescue --force`** (2026-11-14). With the module installed and working,
+  run as the user, it got root from the administrator dialog, found that sudo
+  started as root, replaced the module with a link to
+  `/usr/lib/pam/pam_tid.so.2` all the same, kept the old module as
+  `.pam_tidcmd.so.broken`, and found that sudo started. `status` then reported
+  the replaced module, and `sudo ./pam_tidcmd.sh install` put the current
+  build back, its Touch ID check approved. Not tested: a module that actually
+  crashes or hangs while it authenticates.
+- **The lock file** `/var/run/pam_tidcmd.lock`, made 0644 by an earlier
+  version, was 0600 after a run of this one (2026-11-14).
 - **The install's Touch ID check.** Cancelling the dialog failed the check
   (sudo said "no password was provided"), the install was undone, `sudo_local`
   was as before and `status` reported no module. Approving it kept the module.

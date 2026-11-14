@@ -42,6 +42,7 @@ class PamTidcmd < Formula
 
       If sudo ever stops starting ("unable to initialize PAM"), run this, without sudo:
         /Library/Security/pam_tidcmd/pam_tidcmd rescue
+      If it starts but crashes or hangs while it authenticates you, add --force.
     EOS
   end
 

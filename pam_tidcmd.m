@@ -379,51 +379,69 @@ OSStatus tidcmd_authorize(const char *rightName, const char *prompt, unsigned ti
     return result;
 }
 
+static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
+    unsigned timeout = tidcmd_timeout(argc, argv);
+
+    const char *user = NULL;
+    struct passwd pwdbuf, *pwd = NULL;
+    char pwdstore[4096];
+    if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !user ||
+        getpwnam_r(user, &pwdbuf, pwdstore, sizeof pwdstore, &pwd) != 0 || !pwd) {
+        os_log_error(tidcmd_log(), "unable to obtain the username");
+        return PAM_AUTHINFO_UNAVAIL;
+    }
+
+    /* No dialog without a GUI session (ssh, launchd jobs). */
+    auditinfo_addr_t session = {0};
+    if (getaudit_addr(&session, sizeof session) != 0 ||
+        !(session.ai_flags & SESSION_HAS_GRAPHIC_ACCESS)) {
+        return PAM_AUTH_ERR;
+    }
+
+    /*
+     * authd authenticates the owner of this audit session, so its answer
+     * only vouches for that user. sudo can be asking about another one:
+     * with targetpw or runaspw, or from a shell switched to another user.
+     */
+    if (pwd->pw_uid != session.ai_auid) {
+        os_log(tidcmd_log(), "user %d is not the session owner %d", (int)pwd->pw_uid, (int)session.ai_auid);
+        return PAM_AUTH_ERR;
+    }
+
+    /* sudo -A: the askpass program is expected to do the asking. */
+    const void *askpass = NULL;
+    if (pam_get_data(pamh, "askpass-enabled", &askpass) == PAM_SUCCESS) {
+        return PAM_AUTHINFO_UNAVAIL;
+    }
+
+    if (!tidcmd_touchid_usable(pwd->pw_uid)) {
+        return PAM_AUTH_ERR;
+    }
+
+    const char *prompt = tidcmd_build_prompt(*_NSGetArgc(), *_NSGetArgv(), pwd->pw_dir).UTF8String;
+    OSStatus status = tidcmd_authorize("com.apple.security.sudo", prompt, timeout);
+    os_log_debug(tidcmd_log(), "authorization result: %d", (int)status);
+    return status == errAuthorizationSuccess ? PAM_SUCCESS : PAM_AUTH_ERR;
+}
+
+/*
+ * An exception left to escape would end sudo for everyone who has to
+ * authenticate, while root's sudo, which is not asked to, still starts. So it
+ * is caught, and sudo asks for the password instead. Every exception that can
+ * reach here is thrown before the request is sent (tidcmd_authorize throws
+ * none), so no request is left pending.
+ */
 EXPORT PAM_EXTERN int
 pam_sm_authenticate(pam_handle_t *pamh, int flags, int argc, const char **argv) {
     @autoreleasepool {
-        unsigned timeout = tidcmd_timeout(argc, argv);
-
-        const char *user = NULL;
-        struct passwd pwdbuf, *pwd = NULL;
-        char pwdstore[4096];
-        if (pam_get_user(pamh, &user, NULL) != PAM_SUCCESS || !user ||
-            getpwnam_r(user, &pwdbuf, pwdstore, sizeof pwdstore, &pwd) != 0 || !pwd) {
-            os_log_error(tidcmd_log(), "unable to obtain the username");
-            return PAM_AUTHINFO_UNAVAIL;
+        @try {
+            return authenticate(pamh, argc, argv);
+        } @catch (NSException *e) {
+            os_log_error(tidcmd_log(), "exception %{public}@: %@", e.name, e.reason);
+        } @catch (id e) {
+            os_log_error(tidcmd_log(), "exception: %@", e);
         }
-
-        /* No dialog without a GUI session (ssh, launchd jobs). */
-        auditinfo_addr_t session = {0};
-        if (getaudit_addr(&session, sizeof session) != 0 ||
-            !(session.ai_flags & SESSION_HAS_GRAPHIC_ACCESS)) {
-            return PAM_AUTH_ERR;
-        }
-
-        /*
-         * authd authenticates the owner of this audit session, so its answer
-         * only vouches for that user. sudo can be asking about another one:
-         * with targetpw or runaspw, or from a shell switched to another user.
-         */
-        if (pwd->pw_uid != session.ai_auid) {
-            os_log(tidcmd_log(), "user %d is not the session owner %d", (int)pwd->pw_uid, (int)session.ai_auid);
-            return PAM_AUTH_ERR;
-        }
-
-        /* sudo -A: the askpass program is expected to do the asking. */
-        const void *askpass = NULL;
-        if (pam_get_data(pamh, "askpass-enabled", &askpass) == PAM_SUCCESS) {
-            return PAM_AUTHINFO_UNAVAIL;
-        }
-
-        if (!tidcmd_touchid_usable(pwd->pw_uid)) {
-            return PAM_AUTH_ERR;
-        }
-
-        const char *prompt = tidcmd_build_prompt(*_NSGetArgc(), *_NSGetArgv(), pwd->pw_dir).UTF8String;
-        OSStatus status = tidcmd_authorize("com.apple.security.sudo", prompt, timeout);
-        os_log_debug(tidcmd_log(), "authorization result: %d", (int)status);
-        return status == errAuthorizationSuccess ? PAM_SUCCESS : PAM_AUTH_ERR;
+        return PAM_AUTHINFO_UNAVAIL;
     }
 }
 

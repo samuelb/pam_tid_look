@@ -4,8 +4,9 @@
 #
 # pam_tidcmd.sh is sourced and these are replaced: the paths, the root and
 # ownership steps, the probe, sudo and the Touch ID check. The fake probe
-# follows a policy's includes and fails on a module that is missing or holds
-# the word BROKEN, or on a symbolic link if FAKE_NO_SYMLINK is set. The fake
+# follows a policy's includes, cuts each line at the first # as OpenPAM does,
+# and fails on a module that is missing or holds the word BROKEN, or on a
+# symbolic link if FAKE_NO_SYMLINK is set. The fake
 # sudo starts when the fake probe can load sudo's policy, like the real one,
 # unless FAKE_SUDO=broken. FAKE_ROOT makes the script believe it runs as root.
 
@@ -22,15 +23,17 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/pam_tidcmd_test.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 W=$work/w
 failures=0
+out=
 
 cat >"$work/probe" <<'EOF'
 #!/bin/bash
 module_ok() { [ -f "$1" ] && ! grep -q BROKEN "$1" && { [ -z "${FAKE_NO_SYMLINK:-}" ] || [ ! -L "$1" ]; }; }
 policy_ok() {
-    local kind ctl mod rest
+    local line kind ctl mod rest
     [ -f "$1" ] || return 1
-    while read -r kind ctl mod rest; do
-        case $kind in '' | '#'*) continue ;; esac
+    while IFS= read -r line; do
+        read -r kind ctl mod rest <<<"${line%%#*}"
+        [ -n "$kind" ] || continue
         if [ "$ctl" = include ]; then
             [ ! -e "$(dirname "$1")/$mod" ] || policy_ok "$(dirname "$1")/$mod" || return 1
         elif [[ $mod == /* ]]; then
@@ -182,6 +185,11 @@ no_leftovers() {
     [ -z "$(find "$W/pam.d" -name 'pam_tidcmd-check.*' -o -name '.sudo_local.*')" ] &&
         [ -z "$(find "$W/Security" -name '.staged.*' -o -name '.*.previous')" ]
 }
+set_conf() { # replaces sudo_local
+    chmod u+w "$W/pam.d/sudo_local"
+    printf '%s\n' "$1" >"$W/pam.d/sudo_local"
+    chmod 444 "$W/pam.d/sudo_local"
+}
 add_line() { # appends a line to sudo_local
     chmod u+w "$W/pam.d/sudo_local"
     echo "$1" >>"$W/pam.d/sudo_local"
@@ -199,6 +207,7 @@ echo "== the stubs replace every system path"
 # a test could change the real system. Stop before any test if one does not.
 # shellcheck disable=SC2013,SC2016 # one name per line; the sed expression is literal
 for v in $(sed -n -E 's/^([A-Z_]+)=(\/|\$DEST_DIR|\$PAM_DIR).*/\1/p' "$here/pam_tidcmd.sh"); do
+    [ "$v" != PATH ] || continue # the search path for the system's tools, not a file
     value=$(W=$W /bin/bash -c 'source "$1"; source "$2"; eval "printf %s \"\${$3}\""' _ \
         "$here/pam_tidcmd.sh" "$work/stubs" "$v")
     check "$v is replaced" [ "${value#"$W"/}" != "$value" ]
@@ -407,6 +416,32 @@ check "it names the file" said "$W/pam.d/other_service"
 check "sudo_local is Apple's again" conf_is "$APPLE"
 check "the module is kept" [ -f "$W/Security/pam_tidcmd/pam_tidcmd.so" ]
 
+echo "== uninstall keeps the module while sudo_local still names it"
+setup
+run install
+add_line "account    required       $W/Security/pam_tidcmd/pam_tidcmd.so"
+run uninstall
+check "uninstall fails" [ "$status" = 1 ]
+check "it names sudo_local" said "these files still use the module:"$'\n'"$W/pam.d/sudo_local"
+check "the module is kept" [ -f "$W/Security/pam_tidcmd/pam_tidcmd.so" ]
+
+echo "== a # right after a module path starts a comment, as in OpenPAM"
+setup
+set_conf "$HEAD
+auth       sufficient     pam_tid.so#Apple's"
+commented=$(cat "$W/pam.d/sudo_local")
+run install
+check "install replaces pam_tid.so#…" grep -qx "#pam_tidcmd# auth       sufficient     pam_tid.so#Apple's" "$W/pam.d/sudo_local"
+check "  leaving one active auth line" [ "$(grep -c '^auth' "$W/pam.d/sudo_local")" = 1 ]
+run uninstall
+check "uninstall puts it back byte for byte" conf_is "$commented"
+setup
+run install
+set_conf "$(sed 's|pam_tidcmd[.]so$|pam_tidcmd.so#local|' "$W/pam.d/sudo_local")"
+run uninstall
+check "uninstall removes pam_tidcmd.so#…" conf_is "$APPLE"
+check "  before it removes the module" gone
+
 echo "== rescue as root replaces the module with Apple's"
 M=$W/Security/pam_tidcmd/pam_tidcmd.so
 setup
@@ -421,6 +456,13 @@ check "sudo_local is unchanged" conf_is "$installed"
 check "the broken module is kept" grep -q BROKEN "$W/Security/pam_tidcmd/.pam_tidcmd.so.broken"
 run status
 check "status says the module was replaced" said "replaced with Apple's pam_tid.so by rescue"
+check "  and how to install it again" said "To install it again: sudo "
+status=0
+out=$(W=$W /bin/bash -c 'source "$1"; source "$2"; HERE=$DEST_DIR; main status' _ \
+    "$here/pam_tidcmd.sh" "$work/stubs" 2>&1) || status=$?
+check "  from the installed copy, without telling it to install" \
+    sh -c "! printf '%s' \"\$1\" | grep -q 'pam_tidcmd/pam_tidcmd install'" _ "$out"
+check "  but where to install from" said "run install from the build directory or from Homebrew"
 run uninstall
 check "uninstall afterwards succeeds" [ "$status" = 0 ]
 check "  and puts sudo_local back to Apple's" conf_is "$APPLE"
@@ -452,6 +494,14 @@ run install
 FAKE_ROOT=1 run rescue
 check "rescue when sudo starts changes nothing" said "nothing to rescue"
 check "  and keeps the module" grep -q "module v1" "$M"
+check "  and points to --force" said "rescue --force"
+FAKE_ROOT=1 run rescue --force
+check "rescue --force when sudo starts succeeds" [ "$status" = 0 ]
+check "  with a link to Apple's" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
+check "  and keeps the module it replaced" grep -q "module v1" "$W/Security/pam_tidcmd/.pam_tidcmd.so.broken"
+FAKE_ROOT=1 run rescue --force
+check "rescue --force over Apple's module changes nothing" said "already Apple's pam_tid.so"
+check "  and keeps the link" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
 
 setup
 run install
@@ -504,7 +554,7 @@ check_touchid() {
         eval "$(declare -f touchid_check |
             sed "s|/usr/bin/sudo -n -u \"\$user\" -- /usr/bin/sudo -S -k /usr/bin/true|/bin/bash -c \"\$FAKE\"|")"
         TOUCHID_WAIT=2
-        if touchid_check; then echo "check passed"; else echo "check failed: $check_error"; fi
+        if touchid_check "$W"; then echo "check passed"; else echo "check failed: $check_error"; fi
     ' _ "$here/pam_tidcmd.sh" 2>&1) || status=$?
     elapsed=$((SECONDS - started))
 }
@@ -524,8 +574,13 @@ check "  after the wait, not later" [ "$elapsed" -lt 10 ]
 check "  and every process of the check is killed" sh -c "! kill -0 $(cat "$W/grandchild") 2>/dev/null"
 
 echo "== rescue, with a fake osascript"
-fake_osascript() { # $1: what it prints, $2: its exit status
-    printf '#!/bin/bash\necho %q\nexit %s\n' "$1" "$2" >"$W/osascript"
+fake_osascript() { # $1: what it prints, $2: its exit status. Keeps its arguments in $W/osascript.args.
+    {
+        echo '#!/bin/bash'
+        # shellcheck disable=SC2016 # expands in the fake osascript
+        printf 'printf "%%s\\n" "$@" >%q\n' "$W/osascript.args"
+        printf 'echo %q\nexit %s\n' "$1" "$2"
+    } >"$W/osascript"
     chmod 755 "$W/osascript"
 }
 setup
@@ -533,6 +588,9 @@ fake_osascript "Removed the module." 0
 run rescue
 check "rescue succeeds when sudo loads afterwards" [ "$status" = 0 ]
 check "  and says so" said "sudo starts."
+check "  without --force" sh -c "! grep -q -- --force '$W/osascript.args'"
+run rescue --force
+check "rescue --force passes it on to the root run" grep -qx -- " --force" "$W/osascript.args"
 fake_osascript "Kept the module, because another file uses it" 1
 run rescue
 check "rescue succeeds when uninstall fails but sudo loads" [ "$status" = 0 ]
@@ -570,6 +628,35 @@ run install --timeout 3601
 check "--timeout 3601 is refused" said "--timeout takes 0 to 3600 seconds"
 run uninstall --timeout 5
 check "--timeout with uninstall is refused" said "only when installing"
+run install --force
+check "--force with install is refused" said "--force is only for rescue"
+setup
+rm -f "$W/lock"
+run install
+check "the lock file only root can open is made" [ "$(stat -f %Lp "$W/lock")" = 600 ]
+run uninstall
+chmod 644 "$W/lock"
+run install
+check "  and one anyone could read is restricted" [ "$(stat -f %Lp "$W/lock")" = 600 ]
+setup
+mkdir -p "$W/badbin"
+for tool in awk cat chmod cp mktemp mv rm sed stat; do
+    printf '#!/bin/sh\necho "the caller'\''s %s" >&2\nexit 1\n' "$tool" >"$W/badbin/$tool"
+    chmod 755 "$W/badbin/$tool"
+done
+status=0
+badpath=$W/badbin:$PATH
+out=$(PATH=$badpath W=$W /bin/bash "$work/driver" install 2>&1) || status=$?
+check "the caller's PATH is not used" [ "$status" = 0 ]
+check "  and install works" conf_is "$INSTALLED"
+setup
+mkdir -p "$W/victim"
+nl_path="$W/tmp"$'\n'"$W/victim"
+mkdir -p "$nl_path"
+W=$W /bin/bash -c 'source "$1"; source "$2"; add_temp "$3"; finish' _ \
+    "$here/pam_tidcmd.sh" "$work/stubs" "$nl_path" || true
+check "a temporary path with a newline in it is removed" [ ! -e "$nl_path" ]
+check "  as one path" [ -d "$W/victim" ]
 run frobnicate
 check "an unknown action is refused" [ "$status" = 2 ]
 run
