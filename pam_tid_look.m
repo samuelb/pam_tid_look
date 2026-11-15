@@ -86,18 +86,12 @@ static os_log_t tid_look_log(void) {
 }
 
 /*
- * Unicode's Default_Ignorable_Code_Point set, plus U+2800 BRAILLE PATTERN
- * BLANK. These draw nothing, although some are classed as letters (Hangul
- * fillers), marks (variation selectors, combining grapheme joiner) or symbols.
+ * ICU's Default_Ignorable_Code_Point set, plus U+2800 BRAILLE PATTERN BLANK.
+ * These draw nothing, although some are classed as letters (Hangul fillers),
+ * marks (variation selectors, combining grapheme joiner) or symbols.
  */
 static BOOL draws_nothing(uint32_t c) {
-    return c == 0x00AD || c == 0x034F || c == 0x061C || c == 0x115F || c == 0x1160 ||
-        c == 0x17B4 || c == 0x17B5 || (c >= 0x180B && c <= 0x180F) ||
-        (c >= 0x200B && c <= 0x200F) || (c >= 0x202A && c <= 0x202E) ||
-        (c >= 0x2060 && c <= 0x206F) || c == 0x2800 || c == 0x3164 ||
-        (c >= 0xFE00 && c <= 0xFE0F) || c == 0xFEFF || c == 0xFFA0 ||
-        (c >= 0xFFF0 && c <= 0xFFF8) || (c >= 0x1BCA0 && c <= 0x1BCA3) ||
-        (c >= 0x1D173 && c <= 0x1D17A) || (c >= 0xE0000 && c <= 0xE0FFF);
+    return c == 0x2800 || u_hasBinaryProperty((UChar32)c, UCHAR_DEFAULT_IGNORABLE_CODE_POINT);
 }
 
 static int script_of(uint32_t c) {

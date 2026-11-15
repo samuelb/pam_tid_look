@@ -237,8 +237,8 @@ is normalised before display:
   spaces, so an argument cannot start a fake line or reorder the text.
 - Characters that draw nothing are written as `\u{XXXX}` too, even where Unicode
   classes them as letters, marks or symbols: every default-ignorable code point
-  (variation selectors, the combining grapheme joiner, Hangul fillers) and
-  U+2800 BRAILLE PATTERN BLANK. Otherwise `/etc/hosts` followed by a variation
+  (variation selectors, the combining grapheme joiner, Hangul fillers), as the
+  system's ICU lists them, and U+2800 BRAILLE PATTERN BLANK. Otherwise `/etc/hosts` followed by a variation
   selector would look like `/etc/hosts`.
 - Letters that look like other letters are written as `\u{XXXX}` too, so
   `sudo /usr/bin/іd` with a Cyrillic `і` reads `'/usr/bin/\u{456}d'`. Within a
