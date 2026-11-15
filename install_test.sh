@@ -548,6 +548,16 @@ check "  and keeps the link" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
 
 setup
 run install
+echo "another build" >"$W/other.so"
+ln -sf "$W/other.so" "$M"
+run status
+check "a link to another module is not called Apple's" sh -c "! printf '%s' \"\$1\" | grep -q \"Apple's\"" _ "$out"
+FAKE_ROOT=1 run rescue --force
+check "  and rescue --force replaces it" [ "$(readlink "$M")" = "$W/apple/pam_tid.so.2" ]
+check "  and keeps the link it replaced" [ "$(readlink "$W/Security/pam_tid_look/.pam_tid_look.so.broken")" = "$W/other.so" ]
+
+setup
+run install
 FAKE_SUDO=broken FAKE_ROOT=1 run rescue
 check "rescue when the module is not the cause fails" [ "$status" = 1 ]
 check "  and says so" said "did not get sudo to start, so it was put back"

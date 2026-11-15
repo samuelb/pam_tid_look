@@ -110,9 +110,9 @@ rescue_hint() {
 }
 
 # Whether the module file is Apple's pam_tid.so, as rescue leaves it: a link
-# (only rescue makes one) or a copy.
+# to it or a copy. cmp follows a link.
 is_apple_module() {
-    [ -L "$MODULE" ] || { [ -f "$MODULE" ] && cmp -s "$MODULE" "$APPLE_TID"; }
+    [ -f "$MODULE" ] && cmp -s "$MODULE" "$APPLE_TID"
 }
 
 exists() { [ -e "$1" ] || [ -L "$1" ]; } # a dangling symbolic link exists too

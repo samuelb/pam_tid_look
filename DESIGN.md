@@ -908,8 +908,8 @@ check that sudo asks for authentication at all runs the same way, and install
 must refuse, before it asks, when it does not. And it
 runs `rescue` with a fake `osascript`, and as root: the link, the copy when
 the fake probe refuses links, nothing to do, `--force` when sudo starts, a
-module that is not the cause, a missing module, and install and uninstall
-afterwards. A read-only `/etc/pam.d`
+module that is not the cause, a missing module, a link to a module other
+than Apple's, and install and uninstall afterwards. A read-only `/etc/pam.d`
 stands in for the privacy protection. Before any test, the harness checks that
 the stubs replace every system path the script defines, and it refuses to run
 as root. The scripts under test run from a file,
