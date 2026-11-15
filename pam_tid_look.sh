@@ -281,6 +281,15 @@ uses_tid_look() {
     ' "$CONF"
 }
 
+# Prints the active auth lines of sudo_local ($2, default CONF; - for stdin)
+# whose module field matches the regular expression $1. Nothing if there is
+# no such file.
+auth_lines() {
+    local file=${2:-$CONF}
+    [ "$file" = - ] || [ -f "$file" ] || return 0
+    awk -v re="$1" "$FIELDS"' f[1] == "auth" && f[3] ~ re' "$file"
+}
+
 # The last timeout= value on the current pam_tid_look line, if any.
 current_timeout() {
     [ -f "$CONF" ] || return 0
@@ -554,9 +563,9 @@ do_install() {
 
     # One replacement line cannot keep the meaning of several pam_tid.so lines.
     local count
-    count=$(without_tid_look | awk -v re="$TID_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { c++ } END { print c + 0 }')
+    count=$(without_tid_look | auth_lines "$TID_RE" - | wc -l)
     if [ "$count" -gt 1 ]; then
-        die "$CONF has $count active pam_tid.so lines. Leave one and run this again."
+        die "$CONF has $((count)) active pam_tid.so lines. Leave one and run this again."
     fi
 
     if [ "$timeout_given" = 0 ]; then
@@ -838,8 +847,10 @@ do_status() {
         say "Module:     not installed"
     fi
     say "sudo_local: $CONF"
-    if [ -f "$CONF" ] && awk -v re="$TID_LOOK_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { found = 1 } END { exit !found }' "$CONF"; then
-        awk -v re="$TID_LOOK_RE" "$FIELDS"' f[1] == "auth" && f[3] ~ re { print "            " $0 }' "$CONF"
+    local lines
+    lines=$(auth_lines "$TID_LOOK_RE") || lines=
+    if [ -n "$lines" ]; then
+        printf '%s\n' "$lines" | sed 's/^/            /'
     else
         say "            does not use pam_tid_look"
     fi

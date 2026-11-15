@@ -849,6 +849,12 @@ check "no temporary files are left" no_leftovers
 
 echo "== other cases"
 setup
+run status
+check "status before an install says sudo_local does not use the module" said "does not use pam_tid_look"
+run install --timeout 45
+run status
+check "status after it shows the module's line" said "sudo_local: $W/pam.d/sudo_local"$'\n'"            auth       sufficient     $M timeout=45"$'\n'"sudo:"
+setup
 run uninstall
 check "uninstall without an install succeeds" [ "$status" = 0 ]
 check "  and says so" said "does not use pam_tid_look"
