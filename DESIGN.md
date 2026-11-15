@@ -495,22 +495,42 @@ still uninstall.
 
 The formula is published in the tap `samuelb/tap`, the repository
 `samuelb/homebrew-tap`, so it installs as `samuelb/tap/pam_tid_look`. A release
-is a tag `vX.Y.Z` on `samuelb/pam_tid_look`. Pushing one runs
-`.github/workflows/release.yml`:
+is a tag `vX.Y.Z` on `samuelb/pam_tid_look`, made by
+`.github/workflows/release.yml` in one of two ways:
 
-1. `make lint` and `make test` on the tagged commit, as CI runs them.
-2. `scripts/render_formula.sh` sets the formula's `url` to GitHub's archive of the tag
-   and `sha256` to that archive's checksum, downloaded as Homebrew downloads
-   it. The formula is then installed from a local tap, built from source, and
-   checked with `brew test`, `brew audit --strict` and `brew style`.
-3. The GitHub release, with notes generated from the commits.
-4. The formula is pushed to the tap as `Formula/pam_tid_look.rb`, by the tap's
-   reusable publish workflow, which the releases of the tap's other formulae
-   use too.
+- Run by hand on `main`, the workflow computes the version with git-cliff
+  (`cliff.toml`) from the Conventional Commits since the last tag: `feat:`
+  bumps the minor version, `fix:` and the rest the patch version, a breaking
+  change the major one; the input `bump` can force patch, minor or major. The
+  first release is `v0.1.0`. A version whose tag exists already stops the run.
+  With `dry_run` it does everything up to the tag and stops there.
+- Pushing a tag runs it with the tag's version, which it does not change.
+
+No file in the repository holds the version, so a release commits nothing:
+the formula's `url` gets it when it is rendered. The workflow:
+
+1. git-cliff computes the version and writes the release notes.
+2. `make lint` and `make test` on the commit, as CI runs them.
+3. `scripts/render_formula.sh` sets the formula's `url` to GitHub's archive of the tag
+   and `sha256` to the checksum of GitHub's archive of the commit, which holds
+   the same files: the tag need not exist yet. The formula is then installed
+   from a local tap, built from source from that archive, and checked with
+   `brew test`, `brew audit --strict` and `brew style`. For the install, the
+   copy in the tap has a `file://` url to the archive, named as the tag's
+   would be, so that Homebrew reads the same version from it; the checks then
+   run on the rendered formula. A dry run ends here.
+4. The tag, at the commit, if it was not pushed, and the GitHub release with
+   git-cliff's notes. A tag that exists must point at the commit. The tag is
+   created with the run's `GITHUB_TOKEN`, whose pushes start no workflow, so it
+   does not start a second release.
+5. The formula is rendered again for GitHub's archive of the tag, downloaded
+   as Homebrew downloads it, and pushed to the tap as `Formula/pam_tid_look.rb`,
+   by the tap's reusable publish workflow, which the releases of the tap's
+   other formulae use too.
 
 Each step runs only if the one before it passed, so a release that fails a
-test publishes nothing. The workflow does nothing in a copy of the repository,
-which could not push to the tap anyway.
+test creates no tag and publishes nothing. The workflow does nothing in a copy
+of the repository, which could not push to the tap anyway.
 
 The formula in this repository is a valid formula with a stand-in `url` and
 `sha256`, not a template with markers, so `brew style` can check it as it is.
@@ -527,8 +547,8 @@ tap before `brew test` and `brew audit`.
 Pushing to the tap needs a token in the secret `HOMEBREW_TAP_TOKEN`: the run's
 own `GITHUB_TOKEN` can write only to this repository. The actions and the
 publish workflow are pinned to full commit SHAs, as the publish workflow pins
-its own. **Unverified:** the release has not run; it needs the published
-repository and the secret.
+its own. **Unverified:** the release has not run, a dry run included; it needs
+the published repository and the secret.
 
 ### Config changes
 

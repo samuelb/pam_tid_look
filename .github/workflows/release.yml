@@ -1,27 +1,65 @@
 name: Release
 
-# Pushing a tag vX.Y.Z releases that commit:
+# Two ways to release:
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+# - Run this workflow from the Actions tab, or with
+#     gh workflow run release.yml [-f bump=auto|patch|minor|major] [-f dry_run=true]
+#   It computes the next version from the commits since the last tag
+#   (cliff.toml) and releases the commit it runs on as that version. bump=auto
+#   derives the step from the Conventional Commits; patch, minor and major
+#   force one. With dry_run=true it computes the version and the notes, runs
+#   the tests and checks the formula, but creates no tag and publishes nothing.
+#   A real release runs only on the default branch.
 #
-# 1. verify:  make lint and make test on the tagged commit, as CI runs them;
-# 2. formula: render the Homebrew formula for the tag's source archive
-#             (scripts/render_formula.sh), then install it from a local tap,
-#             built from source, and run its test, audit and style check;
-# 3. release: the GitHub release, with notes generated from the commits;
-# 4. publish: the formula goes to samuelb/homebrew-tap as
+# - Push a tag vX.Y.Z:
+#     git tag v0.1.0 && git push origin v0.1.0
+#   The release takes the tag's version as it is and bumps nothing.
+#
+# No file in the repository holds the version, so a release commits nothing:
+# the version lives in the tag, and in the formula's url, which is rendered at
+# release time. The jobs:
+#
+# 1. prepare: the version, and the release notes, from git-cliff;
+# 2. verify:  make lint and make test, as CI runs them;
+# 3. formula: render the Homebrew formula (scripts/render_formula.sh), install
+#             it from a local tap, built from source, and run its test, audit
+#             and style check;
+# 4. release: create the tag, unless it was pushed, and the GitHub release;
+# 5. homebrew: render the formula for the tag's source archive;
+# 6. publish: the formula goes to samuelb/homebrew-tap as
 #             Formula/pam_tid_look.rb, through that repository's reusable
 #             publish workflow.
+#
+# A dry run stops after 3. The tag is created only after the formula passed,
+# so a failed check leaves no tag behind. It is created with this run's
+# GITHUB_TOKEN, and a push made with that token starts no workflow, so the tag
+# does not start a second release.
 #
 # Needs the secret HOMEBREW_TAP_TOKEN: a token that can push to
 # samuelb/homebrew-tap. This run's GITHUB_TOKEN cannot.
 #
+# Modelled on .github/workflows/release.yml in https://github.com/samuelb/somad.
 # Actions and the publish workflow are pinned to full commit SHAs, as the
 # publish workflow pins its own.
 
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump (auto derives it from the Conventional Commits)"
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
+      dry_run:
+        description: "Compute the version, test and check the formula, but tag and publish nothing"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -31,10 +69,88 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
-    name: Verify
+  prepare:
+    name: Version and release notes
     # Only this repository publishes to samuelb/homebrew-tap.
     if: github.repository == 'samuelb/pam_tid_look'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      # "true" or "false". A tag push has no inputs, and is never a dry run.
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+    steps:
+      - name: Check the branch
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "::error::A release runs only on $DEFAULT_BRANCH, not on $GITHUB_REF. A dry run may run anywhere."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # All of the history and the tags: git-cliff reads the commits since
+          # the last tag.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A tag push: the notes of the commits up to the pushed tag. A run of the
+      # workflow: the next version, and the notes of the commits since the
+      # last tag.
+      - name: Compute the version and the release notes
+        id: cliff
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4
+        with:
+          config: cliff.toml
+          args: ${{ github.event_name == 'push' && '--current' || format('--bump={0} --unreleased', inputs.bump) }}
+        env:
+          OUTPUT: release-notes.md
+
+      - name: Check the version
+        id: version
+        env:
+          COMPUTED: ${{ steps.cliff.outputs.version }}
+          PUSHED: ${{ github.event_name == 'push' && github.ref_name || '' }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+        run: |
+          if [ -n "$PUSHED" ]; then
+            tag=$PUSHED
+          else
+            tag=$COMPUTED
+          fi
+          if ! printf '%s' "$tag" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::The version is '$tag', not vX.Y.Z."
+            exit 1
+          fi
+          # A run of the workflow must compute a version that is not yet
+          # released, on a dry run too, which shows what the release would do.
+          if [ -z "$PUSHED" ] && git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::error::The tag $tag exists already: no commit since the last release?"
+            exit 1
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          {
+            echo "# $tag"
+            if [ "$DRY_RUN" = true ]; then
+              echo
+              echo "Dry run: no tag is created and nothing is published."
+            fi
+            echo
+            cat release-notes.md
+          } >>"$GITHUB_STEP_SUMMARY"
+          echo "Version: $tag"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+
+  verify:
+    name: Verify
+    needs: prepare
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,27 +165,34 @@ jobs:
 
   formula:
     name: Render and check the formula
-    needs: verify
+    needs: [prepare, verify]
     runs-on: macos-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # The tag may not exist yet, so the formula is checked with GitHub's
+      # archive of the commit. It holds the same files as the tag's archive,
+      # which the homebrew job renders the published formula for.
       - name: Render the formula
-        env:
-          TAG: ${{ github.ref_name }}
         run: |
-          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
-          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/source.tar.gz" "$url"
+          src="https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_SHA}.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/source.tar.gz" "$src"
           sum="$(shasum -a 256 "$RUNNER_TEMP/source.tar.gz" | cut -d' ' -f1)"
-          echo "$url: sha256 $sum"
+          echo "$src: sha256 $sum"
           ./scripts/render_formula.sh "${TAG#v}" "$sum" rendered
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
           grep -qxF "  url \"$url\"" rendered/Formula/pam_tid_look.rb
           cat rendered/Formula/pam_tid_look.rb
 
-      # The formula as users get it: downloaded by url, checked against the
-      # checksum, built from source in Homebrew's environment, then tested.
+      # The formula as users get it: downloaded, checked against the checksum,
+      # built from source in Homebrew's environment, then tested. It installs
+      # from a copy whose url is the commit's archive on disk, named as the
+      # tag's archive will be, so that Homebrew finds the same version in it;
+      # test, audit and style then check the rendered formula itself.
       # Homebrew loads a formula from a tap that is not official only once the
       # tap is trusted, except for `brew install` with the full name.
       - name: Install from a local tap and test
@@ -79,11 +202,74 @@ jobs:
         run: |
           brew tap-new --no-git local/release-check
           brew trust --tap local/release-check
-          cp rendered/Formula/pam_tid_look.rb "$(brew --repo local/release-check)/Formula/"
+          formula="$(brew --repo local/release-check)/Formula/pam_tid_look.rb"
+          archive="$RUNNER_TEMP/pam_tid_look-${TAG#v}.tar.gz"
+          mv "$RUNNER_TEMP/source.tar.gz" "$archive"
+          sed -E "s|^  url \"[^\"]*\"\$|  url \"file://$archive\"|" rendered/Formula/pam_tid_look.rb >"$formula"
+          grep -qxF "  url \"file://$archive\"" "$formula"
           brew install --build-from-source local/release-check/pam_tid_look
+          cp rendered/Formula/pam_tid_look.rb "$formula"
           brew test local/release-check/pam_tid_look
           brew audit --strict local/release-check/pam_tid_look
           brew style rendered/Formula/pam_tid_look.rb
+
+  release:
+    name: Tag and GitHub release
+    needs: [prepare, formula]
+    if: needs.prepare.outputs.dry_run == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+
+      # gh creates the tag at this run's commit when it does not exist. A tag
+      # that exists, pushed or left by an earlier attempt, must point there.
+      - name: Create the tag and the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          if tagged="$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$TAG" --jq .sha 2>/dev/null)"; then
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::The tag $TAG points at $tagged, not at $GITHUB_SHA."
+              exit 1
+            fi
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$TAG" --notes-file release-notes.md
+          fi
+
+  homebrew:
+    name: Render the formula for the tag
+    needs: [prepare, release]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The archive of a tag just created may take a moment to be served, so
+      # curl retries.
+      - name: Render the formula
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/source.tar.gz" "$url"
+          sum="$(sha256sum "$RUNNER_TEMP/source.tar.gz" | cut -d' ' -f1)"
+          echo "$url: sha256 $sum"
+          ./scripts/render_formula.sh "${TAG#v}" "$sum" rendered
+          grep -qxF "  url \"$url\"" rendered/Formula/pam_tid_look.rb
+          cat rendered/Formula/pam_tid_look.rb
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -91,32 +277,14 @@ jobs:
           path: rendered/
           if-no-files-found: error
 
-  release:
-    name: GitHub release
-    needs: formula
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Create the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $TAG already exists."
-          else
-            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "$TAG"
-          fi
-
   publish:
     name: Publish to samuelb/homebrew-tap
-    needs: release
+    needs: [prepare, homebrew]
     permissions:
       contents: read
     uses: samuelb/homebrew-tap/.github/workflows/publish.yml@f009c289e3674e0aee1c6f0ca4d93199cdc6b8cb # main, 2026-11-13
     with:
       artifact_name: homebrew-tap-files
-      commit_message: "pam_tid_look ${{ github.ref_name }}"
+      commit_message: "pam_tid_look ${{ needs.prepare.outputs.tag }}"
     secrets:
       tap_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

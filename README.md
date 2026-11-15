@@ -225,19 +225,32 @@ and every pull request (`.github/workflows/ci.yml`). It never runs
 `make dialog-check`.
 
 `Formula/pam_tid_look.rb` is the Homebrew formula. Its `url` and `sha256` stand
-in for a release's. To release, push a tag:
+in for a release's. To release, run the release workflow on `main`:
+
+```
+gh workflow run release.yml                  # the next version, from the commits
+gh workflow run release.yml -f bump=minor    # or force patch, minor or major
+gh workflow run release.yml -f dry_run=true  # show the version and notes, publish nothing
+```
+
+It computes the next version from the
+[Conventional Commits](https://www.conventionalcommits.org) since the last tag
+with [git-cliff](https://git-cliff.org) (`cliff.toml`), and tags the commit
+with it; no file holds the version, so nothing is committed. Pushing a tag
+releases that commit too, as the tag's version, without bumping it:
 
 ```
 git tag v0.1.0
 git push origin v0.1.0
 ```
 
-`.github/workflows/release.yml` then runs the tests again, sets `url` and
-`sha256` to the tag's source archive with `scripts/render_formula.sh`, installs
-and tests that formula from a local tap, creates the GitHub release, and pushes
-the formula to [samuelb/homebrew-tap](https://github.com/samuelb/homebrew-tap).
-This needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may push to
-the tap.
+`.github/workflows/release.yml` then runs the tests again, renders the formula
+with `scripts/render_formula.sh`, installs and tests it from a local tap,
+creates the tag, if it was not pushed, and the GitHub release with notes from
+git-cliff, and pushes the formula, set to the tag's source archive, to
+[samuelb/homebrew-tap](https://github.com/samuelb/homebrew-tap). A dry run
+stops before the tag. This needs the repository secret `HOMEBREW_TAP_TOKEN`, a
+token that may push to the tap.
 
 ## License
 
