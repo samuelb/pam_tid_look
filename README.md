@@ -46,7 +46,7 @@ From the source:
 
 ```
 make
-sudo ./pam_tid_look.sh install
+sudo build/pam_tid_look install
 ```
 
 The first time, macOS asks whether your terminal app may administer the
@@ -90,7 +90,7 @@ sudo "$(brew --prefix)/bin/pam_tid_look" uninstall
 brew uninstall pam_tid_look
 ```
 
-or `sudo ./pam_tid_look.sh uninstall` from the source. If Homebrew's copy is
+or `sudo build/pam_tid_look uninstall` from the source. If Homebrew's copy is
 already gone, `sudo /Library/Security/pam_tid_look/pam_tid_look uninstall`
 does the same.
 
@@ -113,7 +113,7 @@ These ways back do not use sudo. Try them in this order.
 /Library/Security/pam_tid_look/pam_tid_look rescue
 ```
 
-`pam_tid_look rescue` from Homebrew or `./pam_tid_look.sh rescue` from the
+`pam_tid_look rescue` from Homebrew or `build/pam_tid_look rescue` from the
 source does the same. It asks for an administrator password in a macOS
 dialog, which does not go through sudo, and replaces the module with Apple's
 own `pam_tid.so`. sudo then works with Apple's Touch ID, without the command
@@ -206,13 +206,19 @@ tested.
 
 ## Development
 
+The module, the installer and the probe are in `src/`, the tests in `test/`
+and the release's formula script in `scripts/`. `make` builds into `build/`,
+which then holds `pam_tid_look`, `pam_tid_look.so` and `pam_tid_look_probe`
+side by side, as Homebrew's copy and the installed copy do.
+
 `make test` needs no root and shows no dialog. It runs clang's static analyzer
 on every source file, runs the prompt tests twice, built with AddressSanitizer
 and UndefinedBehaviorSanitizer and built as usual, loads the built module, runs
-`install_test.sh`, which exercises install, uninstall and each rollback against
-a scratch directory, and runs `render_formula_test.sh`. `make analyze` and
-`make sanitize` run the first two on their own. `make lint` runs shellcheck.
-`make dialog-check` raises real dialogs and runs sudo; see `dialog_check.m`.
+`test/install_test.sh`, which exercises install, uninstall and each rollback
+against a scratch directory, and runs `test/render_formula_test.sh`.
+`make analyze` and `make sanitize` run the first two on their own. `make lint`
+runs shellcheck. `make dialog-check` raises real dialogs and runs sudo; see
+`test/dialog_check.m`.
 
 CI runs `make lint` and `make test` on a macOS runner for every push to `main`
 and every pull request (`.github/workflows/ci.yml`). It never runs
@@ -227,9 +233,9 @@ git push origin v0.1.0
 ```
 
 `.github/workflows/release.yml` then runs the tests again, sets `url` and
-`sha256` to the tag's source archive with `render_formula.sh`, installs and
-tests that formula from a local tap, creates the GitHub release, and pushes the
-formula to [samuelb/homebrew-tap](https://github.com/samuelb/homebrew-tap).
+`sha256` to the tag's source archive with `scripts/render_formula.sh`, installs
+and tests that formula from a local tap, creates the GitHub release, and pushes
+the formula to [samuelb/homebrew-tap](https://github.com/samuelb/homebrew-tap).
 This needs the repository secret `HOMEBREW_TAP_TOKEN`, a token that may push to
 the tap.
 

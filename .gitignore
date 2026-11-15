@@ -1,6 +1,1 @@
-pam_tid_look.so
-pam_tid_look_probe
-tid_look_test
-dialog_check
-tid_look_test_sanitized
-tid_look_test_sanitized.dSYM
+/build/

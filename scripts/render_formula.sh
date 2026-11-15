@@ -1,7 +1,7 @@
 #!/bin/bash
 # Renders the Homebrew formula for a release, in a tap's layout:
 #
-#   ./render_formula.sh VERSION SHA256 DIR
+#   scripts/render_formula.sh VERSION SHA256 DIR
 #
 # writes DIR/Formula/pam_tid_look.rb: Formula/pam_tid_look.rb with url set to
 # the source archive of the tag vVERSION and sha256 to SHA256, that archive's
@@ -27,7 +27,7 @@ sha256_re='^[0-9a-f]{64}$'
 [[ $version =~ $version_re ]] || die "VERSION must be X.Y.Z, not '$version'"
 [[ $sha256 =~ $sha256_re ]] || die "SHA256 must be 64 lowercase hex digits, not '$sha256'"
 
-src="$(cd "$(dirname "$0")" && pwd)/Formula/pam_tid_look.rb"
+src="$(cd "$(dirname "$0")/.." && pwd)/Formula/pam_tid_look.rb"
 archive=https://github.com/samuelb/pam_tid_look/archive/refs/tags
 url_line="  url \"$archive/v$version.tar.gz\""
 sha256_line="  sha256 \"$sha256\""

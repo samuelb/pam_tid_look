@@ -4,9 +4,9 @@ name: CI
 # dialog.
 #
 # Never run make dialog-check here: it raises real authorization dialogs and
-# runs sudo. On a runner, tid_look_test is expected to skip the exception test,
+# runs sudo. On a runner, prompt_test is expected to skip the exception test,
 # since the job has no GUI session, and to find Touch ID not usable;
-# install_test.sh runs as the runner's normal user, as it must.
+# test/install_test.sh runs as the runner's normal user, as it must.
 #
 # Modelled on .github/workflows/ci.yml in
 # https://github.com/laurigates/macos-sudo-touchid-context, which is under the MIT

@@ -6,8 +6,8 @@ name: Release
 #
 # 1. verify:  make lint and make test on the tagged commit, as CI runs them;
 # 2. formula: render the Homebrew formula for the tag's source archive
-#             (render_formula.sh), then install it from a local tap, built
-#             from source, and run its test, audit and style check;
+#             (scripts/render_formula.sh), then install it from a local tap,
+#             built from source, and run its test, audit and style check;
 # 3. release: the GitHub release, with notes generated from the commits;
 # 4. publish: the formula goes to samuelb/homebrew-tap as
 #             Formula/pam_tid_look.rb, through that repository's reusable
@@ -64,7 +64,7 @@ jobs:
           curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/source.tar.gz" "$url"
           sum="$(shasum -a 256 "$RUNNER_TEMP/source.tar.gz" | cut -d' ' -f1)"
           echo "$url: sha256 $sum"
-          ./render_formula.sh "${TAG#v}" "$sum" rendered
+          ./scripts/render_formula.sh "${TAG#v}" "$sum" rendered
           grep -qxF "  url \"$url\"" rendered/Formula/pam_tid_look.rb
           cat rendered/Formula/pam_tid_look.rb
 

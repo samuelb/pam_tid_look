@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs install and uninstall from pam_tid_look.sh, with their checks and
+# Runs install and uninstall from src/pam_tid_look.sh, with their checks and
 # rollbacks, against a scratch directory and without root. Shows no dialog.
 #
 # pam_tid_look.sh is sourced and these are replaced: the paths, the root and
@@ -20,7 +20,7 @@ if [ "$(id -u)" -eq 0 ]; then
     exit 1
 fi
 
-here=$(cd "$(dirname "$0")" && pwd)
+installer=$(cd "$(dirname "$0")/../src" && pwd)/pam_tid_look.sh
 work=$(mktemp -d "${TMPDIR:-/tmp}/pam_tid_look_test.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 W=$work/w
@@ -152,7 +152,7 @@ setup() {
     echo "apple pam_tid" >"$W/apple/pam_tid.so.2"
     echo "module v1" >"$W/build/pam_tid_look.so"
     cp "$work/probe" "$W/build/pam_tid_look_probe"
-    cp "$here/pam_tid_look.sh" "$W/build/pam_tid_look"
+    cp "$installer" "$W/build/pam_tid_look"
     chmod 755 "$W/build/pam_tid_look_probe" "$W/build/pam_tid_look"
     echo "auth       include        sudo_local" >"$W/pam.d/sudo"
     echo "$APPLE" >"$W/pam.d/sudo_local"
@@ -162,7 +162,7 @@ setup() {
 # Runs pam_tid_look with the stubs, in a bash of its own as the real one would
 # be. Sets out and status.
 cat >"$work/driver" <<EOF
-source "$here/pam_tid_look.sh"
+source "$installer"
 source "$work/stubs"
 main "\$@"
 EOF
@@ -234,10 +234,10 @@ echo "== the stubs replace every system path"
 # Every top-level path in the script must point into the scratch directory, or
 # a test could change the real system. Stop before any test if one does not.
 # shellcheck disable=SC2013,SC2016 # one name per line; the sed expression is literal
-for v in $(sed -n -E 's/^([A-Z_]+)=(\/|\$DEST_DIR|\$PAM_DIR).*/\1/p' "$here/pam_tid_look.sh"); do
+for v in $(sed -n -E 's/^([A-Z_]+)=(\/|\$DEST_DIR|\$PAM_DIR).*/\1/p' "$installer"); do
     [ "$v" != PATH ] || continue # the search path for the system's tools, not a file
     value=$(W=$W /bin/bash -c 'source "$1"; source "$2"; eval "printf %s \"\${$3}\""' _ \
-        "$here/pam_tid_look.sh" "$work/stubs" "$v")
+        "$installer" "$work/stubs" "$v")
     check "$v is replaced" [ "${value#"$W"/}" != "$value" ]
 done
 if [ "$failures" != 0 ]; then
@@ -252,7 +252,7 @@ check "install succeeds" [ "$status" = 0 ]
 check "sudo_local has the module in place of pam_tid.so" conf_is "$INSTALLED"
 check "the module is installed" cmp -s "$W/build/pam_tid_look.so" "$W/Security/pam_tid_look/pam_tid_look.so"
 check "the probe is installed" cmp -s "$W/build/pam_tid_look_probe" "$W/Security/pam_tid_look/pam_tid_look_probe"
-check "this script is installed" cmp -s "$here/pam_tid_look.sh" "$W/Security/pam_tid_look/pam_tid_look"
+check "this script is installed" cmp -s "$installer" "$W/Security/pam_tid_look/pam_tid_look"
 check "no temporary files or backups are left" no_leftovers
 run uninstall
 check "uninstall succeeds" [ "$status" = 0 ]
@@ -502,7 +502,7 @@ check "status says the module was replaced" said "replaced with Apple's pam_tid.
 check "  and how to install it again" said "To install it again: sudo "
 status=0
 out=$(W=$W /bin/bash -c 'source "$1"; source "$2"; HERE=$DEST_DIR; main status' _ \
-    "$here/pam_tid_look.sh" "$work/stubs" 2>&1) || status=$?
+    "$installer" "$work/stubs" 2>&1) || status=$?
 check "  from the installed copy, without telling it to install" \
     sh -c "! printf '%s' \"\$1\" | grep -q 'pam_tid_look/pam_tid_look install'" _ "$out"
 check "  but where to install from" said "run install from the build directory or from Homebrew"
@@ -608,7 +608,7 @@ check_touchid() {
             sed "s|/usr/bin/sudo -n -u \"\$user\" -- /usr/bin/sudo -S -k /usr/bin/true|/bin/bash -c \"\$FAKE\"|")"
         TOUCHID_WAIT=2
         if touchid_check "$W"; then echo "check passed"; else echo "check failed: $check_error"; fi
-    ' _ "$here/pam_tid_look.sh" 2>&1) || status=$?
+    ' _ "$installer" 2>&1) || status=$?
     elapsed=$((SECONDS - started))
 }
 setup
@@ -635,7 +635,7 @@ check_no_auth() {
             sed "s|/usr/bin/sudo -n -u \"\$user\" -- /usr/bin/sudo -n -k /usr/bin/true|/bin/bash -c \"\$FAKE\"|")"
         declare -f runs_without_auth | grep -q FAKE || { echo "the sudo command was not replaced"; exit; }
         if runs_without_auth; then echo "no authentication"; else echo "authentication needed"; fi
-    ' _ "$here/pam_tid_look.sh" 2>&1) || true
+    ' _ "$installer" 2>&1) || true
 }
 check_no_auth 'exit 0'
 check "sudo -n succeeding means no authentication" said "no authentication"
@@ -900,7 +900,7 @@ mkdir -p "$W/victim"
 nl_path="$W/tmp"$'\n'"$W/victim"
 mkdir -p "$nl_path"
 W=$W /bin/bash -c 'source "$1"; source "$2"; add_temp "$3"; finish' _ \
-    "$here/pam_tid_look.sh" "$work/stubs" "$nl_path" || true
+    "$installer" "$work/stubs" "$nl_path" || true
 check "a temporary path with a newline in it is removed" [ ! -e "$nl_path" ]
 check "  as one path" [ -d "$W/victim" ]
 run frobnicate
@@ -911,7 +911,7 @@ setup
 mkdir -p "$W/Security/pam_tid_look"
 status=0
 out=$(W=$W /bin/bash -c 'source "$1"; source "$2"; HERE=$DEST_DIR; main install' _ \
-    "$here/pam_tid_look.sh" "$work/stubs" 2>&1) || status=$?
+    "$installer" "$work/stubs" 2>&1) || status=$?
 check "the installed copy refuses to install" said "This is the installed copy"
 
 echo

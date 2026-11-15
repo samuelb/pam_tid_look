@@ -551,7 +551,7 @@ do_install() {
     [ "$HERE" != "$DEST_DIR" ] || die "This is the installed copy, which can only uninstall. Run install from the build directory or from Homebrew."
     local name
     for name in pam_tid_look.so pam_tid_look_probe; do
-        [ -f "$HERE/$name" ] || die "$HERE/$name not found. Run 'make' first."
+        [ -f "$HERE/$name" ] || die "$HERE/$name not found. From the source, run 'make', then: sudo build/pam_tid_look install"
     done
     user=${SUDO_USER:-}
     if [ -z "$user" ] || [ "$user" = root ]; then

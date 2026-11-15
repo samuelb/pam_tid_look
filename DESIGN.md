@@ -470,11 +470,13 @@ for a link before root opens it.
 
 ### Homebrew
 
-The formula (`Formula/pam_tid_look.rb`) builds the module and the probe, puts
-them and the script in Homebrew's `libexec/pam_tid_look`, and links
-`bin/pam_tid_look` to the script. The script finds the files next to its own
-resolved path, so the same script works from the build directory, from
-Homebrew and from `/Library/Security/pam_tid_look`.
+`make` builds the module and the probe into `build/` and copies the script
+(`src/pam_tid_look.sh`) there as `pam_tid_look`. The formula
+(`Formula/pam_tid_look.rb`) runs `make`, puts those three files in Homebrew's
+`libexec/pam_tid_look`, and links `bin/pam_tid_look` to the script. The script
+finds the files next to its own resolved path, so the same script works from
+`build/`, from Homebrew and from `/Library/Security/pam_tid_look`, which all
+hold the same three files.
 
 The formula does not touch sudo. Homebrew does not run as root, and PAM must
 never load a module from Homebrew's prefix:
@@ -497,7 +499,7 @@ is a tag `vX.Y.Z` on `samuelb/pam_tid_look`. Pushing one runs
 `.github/workflows/release.yml`:
 
 1. `make lint` and `make test` on the tagged commit, as CI runs them.
-2. `render_formula.sh` sets the formula's `url` to GitHub's archive of the tag
+2. `scripts/render_formula.sh` sets the formula's `url` to GitHub's archive of the tag
    and `sha256` to that archive's checksum, downloaded as Homebrew downloads
    it. The formula is then installed from a local tap, built from source, and
    checked with `brew test`, `brew audit --strict` and `brew style`.
@@ -886,8 +888,8 @@ after the timeout and that the process that asked then ends by itself:
 Approving and cancelling need a person and were tested by hand (see
 Verification).
 
-`make test` also runs the probe on the built module, and `install_test.sh`,
-which needs no root and shows no dialog. It sources the script and runs install
+`make test` also runs the probe on the built module, and
+`test/install_test.sh`, which needs no root and shows no dialog. It sources the script and runs install
 and uninstall against a scratch directory, with fakes for the paths, the root
 and ownership steps, the probe, sudo and the Touch ID check. The fake probe
 follows includes, cuts lines at `#` as OpenPAM does, and fails on a module
@@ -931,8 +933,8 @@ go through `/usr/bin/atos`. A null pointer dereference, a read past the
 end of a heap block and a signed overflow, each put into a copy of
 `tid_look_build_prompt()`, made them fail (2026-11-14).
 
-`render_formula_test.sh`, also run by `make test`, checks the release's
-`render_formula.sh`: it sets `url` and `sha256` and changes no other line, and
+`test/render_formula_test.sh`, also run by `make test`, checks the release's
+`scripts/render_formula.sh`: it sets `url` and `sha256` and changes no other line, and
 it refuses a version that is not `X.Y.Z`, a checksum that is not 64 lowercase
 hex digits, a missing argument, and a formula with no or two `url` or `sha256`
 lines of the form it replaces. Without the script's version check or its
@@ -943,7 +945,7 @@ check for one `url` line, or with `sha256` left as it was, the test fails.
 CI (`.github/workflows/ci.yml`) runs `make lint` and `make test` on GitHub's
 `macos-latest` runner for every push to `main` and every pull request. It
 never runs `make dialog-check`, which raises dialogs and runs sudo. On a
-runner, `tid_look_test` is expected to skip the exception test, since the job
+runner, `prompt_test` is expected to skip the exception test, since the job
 has no GUI session, and to report Touch ID as not usable; neither fails it.
 Should a runner have a GUI session owned by its user, the exception test runs
 and still shows no dialog. `install_test.sh` runs as the runner's user, which

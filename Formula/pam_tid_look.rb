@@ -4,7 +4,7 @@
 #
 # The url and sha256 here stand in for a release's. For each tag vX.Y.Z, the
 # release workflow (.github/workflows/release.yml) sets them to that tag's
-# source archive with render_formula.sh and pushes the result to
+# source archive with scripts/render_formula.sh and pushes the result to
 # https://github.com/samuelb/homebrew-tap. Edit the formula here: each release
 # overwrites the tap's copy.
 #
@@ -31,9 +31,8 @@ class PamTidLook < Formula
     # The module and the probe are built for arm64e, arm64 and x86_64: sudo is
     # arm64e on Apple silicon.
     ENV.permit_arch_flags
-    system "make", "pam_tid_look.so", "pam_tid_look_probe"
-    (libexec/"pam_tid_look").install "pam_tid_look.so", "pam_tid_look_probe"
-    (libexec/"pam_tid_look").install "pam_tid_look.sh" => "pam_tid_look"
+    system "make"
+    (libexec/"pam_tid_look").install "build/pam_tid_look.so", "build/pam_tid_look_probe", "build/pam_tid_look"
     bin.install_symlink libexec/"pam_tid_look/pam_tid_look"
   end
 
