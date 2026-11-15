@@ -112,6 +112,8 @@ sudo_starts() {
         return 1
     fi
 }
+# FAKE_NOPASSWD=1: sudo lets the user run /usr/bin/true without authenticating.
+runs_without_auth() { [ -n "${FAKE_NOPASSWD:-}" ]; }
 touchid_check() {
     case ${FAKE_TOUCHID:-ok} in
     ok) return 0 ;;
@@ -296,6 +298,21 @@ check "install fails" [ "$status" = 1 ]
 check "it says sudo does not start now" said "sudo does not start as things are now"
 check "sudo_local is unchanged" conf_is "$APPLE"
 check "the module directory is gone" gone
+
+echo "== nothing is changed when sudo needs no authentication for the check"
+setup
+FAKE_NOPASSWD=1 run install
+check "install fails" [ "$status" = 1 ]
+check "it says why" said "without authenticating"
+check "  and that the Touch ID check cannot work" said "cannot test Touch ID"
+check "  before it asks" sh -c "! grep -qF 'Install pam_tid_look?' '$W/tty'"
+check "sudo_local is unchanged" conf_is "$APPLE"
+check "the module directory is gone" gone
+check "no temporary files are left" no_leftovers
+setup
+run install
+check "with authentication needed, install goes on" [ "$status" = 0 ]
+check "  and installs" conf_is "$INSTALLED"
 
 echo "== nothing is changed when the new sudo_local would not load"
 setup
@@ -598,6 +615,23 @@ check_touchid 'sleep 30 & echo $! >"$W/grandchild"; wait'
 check "an unanswered dialog fails" said "not answered within 2 seconds"
 check "  after the wait, not later" [ "$elapsed" -lt 10 ]
 check "  and every process of the check is killed" sh -c "! kill -0 $(cat "$W/grandchild") 2>/dev/null"
+
+echo "== the check for sudo without authentication, with a fake sudo"
+# The real runs_without_auth, with its sudo command replaced by the shell code in $1.
+check_no_auth() {
+    out=$(W=$W FAKE=$1 /bin/bash -c '
+        source "$1"
+        eval "$(declare -f runs_without_auth |
+            sed "s|/usr/bin/sudo -n -u \"\$user\" -- /usr/bin/sudo -n -k /usr/bin/true|/bin/bash -c \"\$FAKE\"|")"
+        declare -f runs_without_auth | grep -q FAKE || { echo "the sudo command was not replaced"; exit; }
+        if runs_without_auth; then echo "no authentication"; else echo "authentication needed"; fi
+    ' _ "$here/pam_tid_look.sh" 2>&1) || true
+}
+check_no_auth 'exit 0'
+check "sudo -n succeeding means no authentication" said "no authentication"
+check_no_auth 'echo "sudo: a password is required" >&2; exit 1'
+check "sudo -n failing means authentication is needed" said "authentication needed"
+check "  and says nothing" sh -c "! printf '%s' \"\$1\" | grep -q 'password is required'" _ "$out"
 
 echo "== rescue, with a fake osascript"
 fake_osascript() { # $1: what it prints, $2: its exit status. Keeps its arguments in $W/osascript.args.

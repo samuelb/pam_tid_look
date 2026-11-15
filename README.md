@@ -53,8 +53,10 @@ The first time, macOS asks whether your terminal app may administer the
 computer: allow it, since only then may root change `/etc/pam.d`. `install`
 copies the module to `/Library/Security/pam_tid_look`, which only root can
 change, and puts it in `/etc/pam.d/sudo_local` in place of the `pam_tid.so`
-line. Before changing anything it checks that sudo starts and that PAM can load
-the module and the new config. Then it shows the change to `sudo_local` as a
+line. Before changing anything it checks that sudo starts, that it asks you to
+authenticate for `/usr/bin/true` (with a `NOPASSWD` rule for it, install
+refuses: Touch ID could not be tested), and that PAM can load the module and
+the new config. Then it shows the change to `sudo_local` as a
 diff, the module's SHA-256 hash and whether it differs from the one installed,
 and asks you to confirm. Afterwards it checks that sudo still starts and
 opens a Touch ID dialog for `sudo -S -k /usr/bin/true`, which you approve. If a

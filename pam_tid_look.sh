@@ -9,9 +9,10 @@
 #
 # install copies the module to /Library/Security/pam_tid_look and puts it in
 # /etc/pam.d/sudo_local in place of Apple's pam_tid.so. It changes nothing
-# unless sudo starts now and PAM can load the new sudo_local. After the
-# change it checks that sudo still starts, then asks you to approve a Touch ID
-# dialog for `sudo -S -k /usr/bin/true`. If a check fails, the dialog is
+# unless sudo starts now, asks you to authenticate for /usr/bin/true, and PAM
+# can load the new sudo_local. After the change it checks that sudo still
+# starts, then asks you to approve a Touch ID dialog for
+# `sudo -S -k /usr/bin/true`. If a check fails, the dialog is
 # cancelled or not answered within two minutes, or the run is interrupted,
 # the previous files are put back.
 #
@@ -412,6 +413,16 @@ sudo_starts() {
     return 1
 }
 
+# Whether sudo lets the user who ran this run /usr/bin/true without
+# authenticating, through a NOPASSWD rule or with authentication turned off
+# for them. sudo would then never show that user Touch ID for it, and the
+# Touch ID check below would pass without the module being asked. -n makes
+# sudo fail where it would authenticate, so this shows no dialog; -k makes it
+# ignore cached credentials, as the check does.
+runs_without_auth() {
+    /usr/bin/sudo -n -u "$user" -- /usr/bin/sudo -n -k /usr/bin/true </dev/null >/dev/null 2>&1 9>&-
+}
+
 kill_tree() { # SIGKILL a process and all its descendants
     local child
     for child in $(pgrep -P "$1" 2>/dev/null); do
@@ -559,6 +570,11 @@ do_install() {
 
     # Without a working sudo now, a check after the change would mean nothing.
     sudo_starts || die "sudo does not start as things are now, so nothing was changed." "$sudo_error"
+    if runs_without_auth; then
+        die "sudo lets $user run /usr/bin/true without authenticating (a NOPASSWD rule, or no authentication" \
+            "for $user in the sudoers policy), so the installer cannot test Touch ID with it. sudo would" \
+            "never show $user Touch ID for such commands anyway. Nothing was changed."
+    fi
     check_pam_dir
 
     if [ ! -d "$DEST_DIR" ]; then

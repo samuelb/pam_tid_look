@@ -574,7 +574,7 @@ install, taken from the copy that will be moved into place rather than from the
 build, which could change meanwhile, and says whether that module differs from
 the installed one. The hash can be compared with a published one.
 
-Install asks after checks 1 to 3 (see Install), so that you are not asked about
+Install asks after checks 1 to 4 (see Install), so that you are not asked about
 a change those checks would refuse, and before it saves the current files or
 moves anything into place. Uninstall asks before its first write, once it knows
 whether it will have to set `sudo_local` aside, and says so. When `sudo_local`
@@ -588,7 +588,7 @@ means no. `--yes` answers in advance, for scripts. Without a terminal and
 without `--yes`, install refuses at once, before its checks, and uninstall
 refuses when it reaches the question. Either way nothing has been changed.
 
-What is written is what was shown. Install copies `sudo_local` before check 3,
+What is written is what was shown. Install copies `sudo_local` before check 4,
 and uninstall before it builds the new file. If `sudo_local` no longer matches
 that copy after the answer, the run stops without changing anything.
 
@@ -607,9 +607,16 @@ Before changing anything, install requires that:
 
 1. `sudo -n /usr/bin/true` as root succeeds now. Otherwise a check after the
    change would prove nothing.
-2. The new module, copied next to its final place under a temporary name,
+2. sudo asks the user who ran the installer to authenticate for
+   `/usr/bin/true`: `sudo -n -k /usr/bin/true`, run as that user, fails.
+   `-n` makes sudo fail where it would authenticate, so this shows nothing. If
+   it succeeds, a `NOPASSWD` rule or a policy without authentication for that
+   user lets the command run without asking the module, so check 7 would pass
+   whatever the module does, and sudo would never show that user Touch ID for
+   such commands anyway. Install refuses.
+3. The new module, copied next to its final place under a temporary name,
    loads in the probe and exports `pam_sm_authenticate`.
-3. PAM can load the new `sudo_local`, written with the module at that
+4. PAM can load the new `sudo_local`, written with the module at that
    temporary path.
 
 Then it shows the change and asks (see Asking before a change). If you agree,
@@ -618,23 +625,23 @@ a reinstall over a working module can be undone after the new one has taken its
 place), moves the new files into place and writes `sudo_local`. Afterwards it
 requires that:
 
-4. The probe can load `/etc/pam.d/sudo`, which now includes the new
+5. The probe can load `/etc/pam.d/sudo`, which now includes the new
    `sudo_local`.
-5. `sudo -n /usr/bin/true` as root succeeds.
-6. The user who ran the installer approves a Touch ID dialog for
+6. `sudo -n /usr/bin/true` as root succeeds.
+7. The user who ran the installer approves a Touch ID dialog for
    `sudo -S -k /usr/bin/true`, run as that user through the new config. `-k`
    makes sudo authenticate despite cached credentials, and leaves them as they
    are. `-S` with no input makes the password fallback fail at once, so only an
    approved dialog passes. After two minutes without an answer, the check kills
    that sudo, which closes its dialog.
 
-The sixth check replaces asking you to run `sudo -k true` in a second terminal
+The seventh check replaces asking you to run `sudo -k true` in a second terminal
 and type `y` within five minutes. It tests the same path, authentication
 through the module, without relying on the answer. It needs `SUDO_USER`, so
 install refuses to run from a root login shell. It also needs the GUI session,
 so an install over ssh is always undone.
 
-If check 4, 5 or 6 fails, the script stops on an error, or the run is
+If check 5, 6 or 7 fails, the script stops on an error, or the run is
 interrupted, the EXIT trap puts back the saved `sudo_local`, then the previous
 files, and checks again that sudo starts. `sudo_local` goes first, so a failed
 first install never leaves it naming a module that is already deleted. If
@@ -870,7 +877,9 @@ uninstall still removes the module while backups name it.
 
 `install_test.sh` also runs the real Touch ID check with a fake command in
 place of sudo: approved, cancelled, ended by a signal, and unanswered, where it
-must give up after the wait and kill every process the check started. And it
+must give up after the wait and kill every process the check started. The
+check that sudo asks for authentication at all runs the same way, and install
+must refuse, before it asks, when it does not. And it
 runs `rescue` with a fake `osascript`, and as root: the link, the copy when
 the fake probe refuses links, nothing to do, `--force` when sudo starts, a
 module that is not the cause, a missing module, and install and uninstall
