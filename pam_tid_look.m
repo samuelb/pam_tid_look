@@ -415,77 +415,57 @@ static const char *sudoers_path(char **envp) {
 }
 
 /*
- * The file sudoers' find_path() picks for word, searching path as root, or
- * NULL when that is not clear-cut. Each entry is tried as "entry/word", and
- * the first regular file with an execute bit wins. sudo tries empty and "."
- * entries only after all the others, so a match that only they could give
- * leaves the hint out, as do a relative entry, a candidate too long for
- * sudo and an error other than "no such file".
- *
- * sudoers searches as the user the command runs as, then as the caller
- * (resolve_cmnd.c). For a command that runs as root, the first search is
- * this one. The result is malloc'd.
+ * Whether path itself (a symbolic link is not followed) has an ACL entry that
+ * match() accepts. An ACL or an entry that cannot be read counts as one.
  */
-static char *path_lookup(const char *word, const char *path) {
-    for (const char *entry = path; ; ) {
-        size_t length = strcspn(entry, ":");
-        if (length > 0 && !(length == 1 && entry[0] == '.')) {
-            if (entry[0] != '/') return NULL;
-            char candidate[PATH_MAX];
-            if (length >= sizeof candidate ||
-                snprintf(candidate, sizeof candidate, "%.*s/%s", (int)length, entry, word) >= (int)sizeof candidate) {
-                return NULL;
-            }
-            struct stat st;
-            if (stat(candidate, &st) == 0) {
-                if (S_ISREG(st.st_mode) && (st.st_mode & 0111)) return strdup(candidate);
-            } else if (errno != ENOENT && errno != ENOTDIR) {
-                return NULL;
-            }
-        }
-        if (!entry[length]) return NULL;
-        entry += length + 1;
-    }
-}
-
-/*
- * Whether an ACL entry of path itself (a symbolic link is not followed) allows
- * something, which may let someone other than its owner change it. An ACL that
- * cannot be read counts as one.
- */
-static BOOL acl_allows(const char *path) {
+static BOOL acl_has(const char *path, BOOL (*match)(acl_entry_t entry, acl_tag_t tag)) {
     acl_t acl = acl_get_link_np(path, ACL_TYPE_EXTENDED);
     if (!acl) return errno != ENOENT; /* ENOENT: no ACL */
-    BOOL allows = NO;
+    BOOL found = NO;
     acl_entry_t entry;
-    for (int which = ACL_FIRST_ENTRY; !allows && acl_get_entry(acl, which, &entry) == 0; which = ACL_NEXT_ENTRY) {
+    for (int which = ACL_FIRST_ENTRY; !found && acl_get_entry(acl, which, &entry) == 0; which = ACL_NEXT_ENTRY) {
         acl_tag_t tag;
-        if (acl_get_tag_type(entry, &tag) != 0 || tag == ACL_EXTENDED_ALLOW) allows = YES;
+        found = acl_get_tag_type(entry, &tag) != 0 || match(entry, tag);
     }
     acl_free(acl);
-    return allows;
+    return found;
 }
 
-/* Whether only root can change path itself: owned by root, not group or world writable, no allowing ACL. */
-static BOOL root_owned(const char *path, struct stat *st) {
-    return lstat(path, st) == 0 && st->st_uid == 0 && !(st->st_mode & (S_IWGRP | S_IWOTH)) && !acl_allows(path);
+/* An entry that allows something, which may let someone other than the owner change the file. */
+static BOOL allows(acl_entry_t entry, acl_tag_t tag) {
+    return tag == ACL_EXTENDED_ALLOW;
 }
+
+/* An entry that denies searching a directory, to anyone. */
+static BOOL denies_search(acl_entry_t entry, acl_tag_t tag) {
+    acl_permset_t perms;
+    return tag == ACL_EXTENDED_DENY && (acl_get_permset(entry, &perms) != 0 || acl_get_perm_np(perms, ACL_SEARCH) != 0);
+}
+
+/* A test walk() applies to each component of a path: the component, its lstat() and the test's context. */
+typedef BOOL (*walk_test)(const char *path, const struct stat *st, const void *context);
+
+typedef enum { kWalkPassed, kWalkFailed, kWalkMissing } walk_result;
 
 /*
- * Whether only root can change what an absolute path names: "/", every
- * directory on the way and the file itself, through symbolic links, pass
- * root_owned(). The rule of check_dirs() in pam_tid_look.sh. Anything that
- * cannot be checked fails.
+ * Walks an absolute path as the kernel resolves it: "/", then each component
+ * in turn, following symbolic links (whose targets are walked too), and
+ * applies passes() to every one of them. kWalkPassed when all pass;
+ * kWalkMissing when a component does not exist (ENOENT, or ENOTDIR under a
+ * file) and every one before it passed; kWalkFailed when one does not pass
+ * or anything else goes wrong (too long, a loop, an unreadable link).
  */
-static BOOL root_only(const char *path) {
+static walk_result walk(const char *path, walk_test passes, const void *context) {
     char at[PATH_MAX] = "/";  /* absolute, without symbolic links, and checked */
     char rest[2 * PATH_MAX];  /* what is left to walk */
     struct stat st;
-    if (!root_owned("/", &st) || strlcpy(rest, path, sizeof rest) >= sizeof rest) return NO;
+    if (lstat("/", &st) != 0 || !passes("/", &st, context) || strlcpy(rest, path, sizeof rest) >= sizeof rest) {
+        return kWalkFailed;
+    }
     for (int links = 0; rest[0]; ) {
         size_t length = strcspn(rest, "/");
         char part[PATH_MAX];
-        if (length >= sizeof part) return NO;
+        if (length >= sizeof part) return kWalkFailed;
         memcpy(part, rest, length);
         part[length] = '\0';
         size_t taken = length + (rest[length] == '/');
@@ -498,38 +478,118 @@ static BOOL root_only(const char *path) {
             continue;
         }
         char next[PATH_MAX];
-        if (snprintf(next, sizeof next, "%s/%s", strcmp(at, "/") ? at : "", part) >= (int)sizeof next ||
-            !root_owned(next, &st)) {
-            return NO;
+        if (snprintf(next, sizeof next, "%s/%s", strcmp(at, "/") ? at : "", part) >= (int)sizeof next) {
+            return kWalkFailed;
         }
+        if (lstat(next, &st) != 0) return errno == ENOENT || errno == ENOTDIR ? kWalkMissing : kWalkFailed;
+        if (!passes(next, &st, context)) return kWalkFailed;
         if (!S_ISLNK(st.st_mode)) {
             strlcpy(at, next, sizeof at);
             continue;
         }
         char target[PATH_MAX], joined[sizeof rest];
         ssize_t n = readlink(next, target, sizeof target - 1);
-        if (n <= 0 || ++links > 32) return NO;
+        if (n <= 0 || ++links > 32) return kWalkFailed;
         target[n] = '\0';
         if (target[0] == '/') strlcpy(at, "/", sizeof at);
-        if (snprintf(joined, sizeof joined, "%s/%s", target, rest) >= (int)sizeof joined) return NO;
+        if (snprintf(joined, sizeof joined, "%s/%s", target, rest) >= (int)sizeof joined) return kWalkFailed;
         strlcpy(rest, joined, sizeof rest);
     }
-    return YES;
+    return kWalkPassed;
+}
+
+/* Whether only root can change path itself: owned by root, not group or world writable, no allowing ACL. */
+static BOOL root_owned(const char *path, const struct stat *st, const void *context) {
+    return st->st_uid == 0 && !(st->st_mode & (S_IWGRP | S_IWOTH)) && !acl_has(path, allows);
+}
+
+/*
+ * Whether only root can change what an absolute path names: "/", every
+ * directory on the way and the file itself, through symbolic links, pass
+ * root_owned(). The rule of check_dirs() in pam_tid_look.sh. Anything that
+ * cannot be checked fails, a missing component too.
+ */
+static BOOL root_only(const char *path) {
+    return walk(path, root_owned, NULL) == kWalkPassed;
+}
+
+/* The account sudo authenticates: who the PATH search must not see past. */
+typedef struct {
+    uid_t uid;
+    gid_t gid; /* the primary group only */
+} account_ids;
+
+/*
+ * Whether the account can search path, if it is a directory: the execute bit
+ * of the owner if the account owns it, else of the group if that is the
+ * account's primary group, else of both the group and others, since the
+ * account may be in the directory's group as a supplementary one and the
+ * group's bits then apply instead of the others'. And no ACL entry that
+ * denies searching. Following a symbolic link, or looking up a name in a
+ * file, needs no permission.
+ */
+static BOOL searchable(const char *path, const struct stat *st, const void *context) {
+    const account_ids *account = context;
+    if (!S_ISDIR(st->st_mode)) return YES;
+    mode_t bits = st->st_uid == account->uid ? S_IXUSR : st->st_gid == account->gid ? S_IXGRP : S_IXGRP | S_IXOTH;
+    return (st->st_mode & bits) == bits && !acl_has(path, denies_search);
+}
+
+/*
+ * The file sudoers' find_path() picks for word, searching path as root, or
+ * NULL when that is not clear-cut. Each entry is tried as "entry/word", and
+ * the first regular file with an execute bit wins. sudo tries empty and "."
+ * entries only after all the others, so a match that only they could give
+ * leaves the hint out, as do a relative entry, a candidate too long for
+ * sudo and an error other than "no such file".
+ *
+ * sudoers searches as the user the command runs as, then as the caller
+ * (resolve_cmnd.c). For a command that runs as root, the first search is
+ * this one. The module runs as root, but the prompt is shown before the
+ * caller has authenticated, so the hint must tell the caller nothing about
+ * files it could not see: each candidate is walked first, and every
+ * directory on the way, through symbolic links, must be searchable() by the
+ * account. If one is not, there is no hint at all, not just no match in that
+ * entry: what a later entry gives would tell whether the earlier one has the
+ * file, and it is not what sudo runs if it does. The result is malloc'd.
+ */
+static char *path_lookup(const char *word, const char *path, const account_ids *account) {
+    for (const char *entry = path; ; ) {
+        size_t length = strcspn(entry, ":");
+        if (length > 0 && !(length == 1 && entry[0] == '.')) {
+            if (entry[0] != '/') return NULL;
+            char candidate[PATH_MAX];
+            if (length >= sizeof candidate ||
+                snprintf(candidate, sizeof candidate, "%.*s/%s", (int)length, entry, word) >= (int)sizeof candidate) {
+                return NULL;
+            }
+            walk_result walked = walk(candidate, searchable, account);
+            if (walked == kWalkFailed) return NULL;
+            struct stat st;
+            if (walked == kWalkPassed) {
+                if (stat(candidate, &st) != 0) return NULL;
+                if (S_ISREG(st.st_mode) && (st.st_mode & 0111)) return strdup(candidate);
+            }
+        }
+        if (!entry[length]) return NULL;
+        entry += length + 1;
+    }
 }
 
 /*
  * The PATH section of the prompt, or "" when there is no hint. envp is the
  * environment as exec passed it, or NULL when that is unknown or sudo does not
- * search the caller's PATH (see tid_look_policy_uses_path).
+ * search the caller's PATH (see tid_look_policy_uses_path). account is the
+ * user sudo authenticates.
  *
  * The section warns when someone other than root can change the file found.
  * It does not look at the PATH directories before the match.
  */
-static NSString *path_hint(int argc, char **argv, char **envp, const char *home) {
+static NSString *path_hint(int argc, char **argv, char **envp, const char *home, const account_ids *account) {
     int i = command_index(argc, argv);
     const char *path = sudoers_path(envp);
     if (i < 0 || !path || !argv[i][0] || strchr(argv[i], '/')) return @"";
-    char *match = path_lookup(argv[i], path);
+    char *match = path_lookup(argv[i], path, account);
     if (!match) return @"";
     NSString *shown = cut_middle(visible_path(match, home), kMaxContextLength, kDirectoryHead, kDirectoryTail);
     BOOL safe = root_only(match);
@@ -722,12 +782,14 @@ static NSString *requesting_processes(void) {
  * edge and wraps under itself, and a blank line separates the sections.
  *
  * argv and envp are sudo's, as exec laid them out; envp may be NULL (see
- * path_hint).
+ * path_hint). uid and gid are the user sudo authenticates and its primary
+ * group, and home its home directory.
  */
-NSString *tid_look_build_prompt(int argc, char **argv, char **envp, const char *home) {
+NSString *tid_look_build_prompt(int argc, char **argv, char **envp, const char *home, uid_t uid, gid_t gid) {
+    account_ids account = {uid, gid};
     return [NSString stringWithFormat:@"Command:\n%@\n\n%@Directory:\n%@\n\nRequested by:\n%@\n\n",
         command_line(argc, argv),
-        path_hint(argc, argv, envp, home),
+        path_hint(argc, argv, envp, home, &account),
         cut_middle(working_directory(home), kMaxContextLength, kDirectoryHead, kDirectoryTail),
         cut_middle(requesting_processes(), kMaxContextLength, kRequesterHead, kRequesterTail)];
 }
@@ -888,7 +950,8 @@ static int authenticate(pam_handle_t *pamh, int argc, const char **argv) {
 
     /* Read here, as root, which can read sudoers. */
     char **env = tid_look_policy_uses_path("/etc/sudo.conf", "/etc/sudoers") ? tid_look_exec_environment() : NULL;
-    const char *prompt = tid_look_build_prompt(*_NSGetArgc(), *_NSGetArgv(), env, account->pw_dir).UTF8String;
+    const char *prompt = tid_look_build_prompt(*_NSGetArgc(), *_NSGetArgv(), env, account->pw_dir,
+        account->pw_uid, account->pw_gid).UTF8String;
     free(env);
     OSStatus status = tid_look_authorize("com.apple.security.sudo", prompt, timeout);
     os_log_debug(tid_look_log(), "authorization result: %d", (int)status);

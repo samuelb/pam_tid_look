@@ -346,7 +346,30 @@ sudo, and an error other than "no such file", such as a loop of symbolic links.
 caller (`resolve_cmnd.c`). The module runs as root and sees every directory,
 so for a command that runs as root its first match is sudo's. Another user
 might not see into the match's directory and get a later one, which is why the
-hint is only given for root. Two sudoers settings change the search:
+hint is only given for root.
+
+Seeing every directory is also more than the caller may know. sudo shows the
+prompt before anyone has authenticated, and itself reports "command not found"
+only after that, so as not to tell an unauthenticated caller anything. A hint
+found as root would: `PATH=/var/root/bin sudo deploy.sh` would say whether
+root's folder holds a `deploy.sh`, one name per dialog. So the hint is left out
+when the caller could not have seen the match, or anything in `PATH` before
+it. Each candidate is walked from `/`, through symbolic links, and every
+directory on the way must be searchable by the account sudo authenticates:
+the owner's execute bit if the account owns it, else the group's if the
+directory's group is the account's primary group, else both the group's and
+the others', since the account may be in that group as a supplementary one,
+and then the group's bits apply, not the others'. And no ACL entry may deny
+searching, to anyone. An ACL that cannot be read counts as one. A missing
+directory is passed over, as before, since the caller can see that it is
+missing; any other failure leaves the hint out altogether, not just that
+entry, because the entries after it would tell whether it has the file, and
+sudo would run that file if it did. Access only through a supplementary group
+or an allowing ACL entry is not seen, which only leaves the hint out. The walk
+is that of the warning (see below), with another test for each directory. It
+changes no credentials.
+
+Two sudoers settings change the search:
 `secure_path`, which sudo then searches instead of `PATH`, and
 `runas_default`, which runs a command without `-u` as another user. Neither is
 set on macOS as it ships. The module reads `/etc/sudo.conf` and `/etc/sudoers`
@@ -819,7 +842,10 @@ install and remove correctly.
 look-alike letters, truncation, the PATH hint, and the Touch ID availability
 check. The PATH tests give every environment and sudoers file themselves, and
 start the test program again with a name given twice to check how the
-environment is read back. The availability check was also
+environment is read back. For whose search it is, they ask for the hint for
+another account, nobody, in folders under `/private/tmp` that this user can
+search and nobody cannot: by mode, by group and by an ACL entry, and through
+a symbolic link. The availability check was also
 confirmed to answer per user: usable for the logged-in user, not usable for root
 or a nonexistent uid.
 

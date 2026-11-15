@@ -2,14 +2,17 @@
 
 #import <Foundation/Foundation.h>
 #import <bsm/audit.h>
+#import <membership.h>
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
 #import <pwd.h>
 #import <security/pam_appl.h>
 #import <spawn.h>
+#import <sys/acl.h>
+#import <sys/stat.h>
 #import <sys/wait.h>
 
-NSString *tid_look_build_prompt(int argc, char **argv, char **envp, const char *home);
+NSString *tid_look_build_prompt(int argc, char **argv, char **envp, const char *home, uid_t uid, gid_t gid);
 char **tid_look_exec_environment(void);
 BOOL tid_look_policy_uses_path(const char *sudoConf, const char *sudoers);
 BOOL tid_look_touchid_usable(uid_t uid);
@@ -74,7 +77,7 @@ static char **exec_layout(int argc, char **argv) {
 static NSString *line_with_arg(NSData *arg, const char *home) {
     NSMutableData *bytes = [arg mutableCopy];
     [bytes appendBytes:"" length:1];
-    return command_of(tid_look_build_prompt(3, exec_layout(3, (char *[]){"sudo", "echo", bytes.mutableBytes}), NULL, home));
+    return command_of(tid_look_build_prompt(3, exec_layout(3, (char *[]){"sudo", "echo", bytes.mutableBytes}), NULL, home, getuid(), getgid()));
 }
 
 /* The PATH section's lines, compared like expect() compares the command line. */
@@ -95,6 +98,20 @@ static char *keep(NSString *s) {
 static BOOL make_command(NSString *path, short mode) {
     return [NSFileManager.defaultManager createFileAtPath:path
         contents:[@"#!/bin/sh\n" dataUsingEncoding:NSUTF8StringEncoding] attributes:@{NSFilePosixPermissions: @(mode)}];
+}
+
+/* Gives dir an ACL entry that denies searching it to the user nobody, who is not the one running the tests. */
+static BOOL deny_search_to_nobody(NSString *dir) {
+    acl_t acl = acl_init(1);
+    acl_entry_t entry;
+    acl_permset_t perms;
+    uuid_t nobody;
+    BOOL ok = acl && mbr_uid_to_uuid((uid_t)-2, nobody) == 0 && acl_create_entry(&acl, &entry) == 0 &&
+        acl_set_tag_type(entry, ACL_EXTENDED_DENY) == 0 && acl_set_qualifier(entry, nobody) == 0 &&
+        acl_get_permset(entry, &perms) == 0 && acl_clear_perms(perms) == 0 && acl_add_perm(perms, ACL_SEARCH) == 0 &&
+        acl_set_permset(entry, perms) == 0 && acl_set_file(dir.fileSystemRepresentation, ACL_TYPE_EXTENDED, acl) == 0;
+    if (acl) acl_free(acl);
+    return ok;
 }
 
 /* Runs this program again with exactly these arguments and environment strings, and returns what it prints. */
@@ -162,8 +179,11 @@ static void expect_timeout(NSString *label, unsigned wanted, int argc, const cha
 
 #define ARGV(...) ((char *[]){__VA_ARGS__, NULL})
 #define COUNT(...) ((int)(sizeof((char *[]){__VA_ARGS__}) / sizeof(char *)))
-/* A prompt for sudo's argv, with sudo's environment env. */
-#define PROMPT_ENV(env, ...) tid_look_build_prompt(COUNT(__VA_ARGS__), exec_layout(COUNT(__VA_ARGS__), ARGV(__VA_ARGS__)), env, home)
+/* A prompt for sudo's argv, with sudo's environment env, for the account uid with primary group gid. */
+#define PROMPT_AS(uid, gid, env, ...) \
+    tid_look_build_prompt(COUNT(__VA_ARGS__), exec_layout(COUNT(__VA_ARGS__), ARGV(__VA_ARGS__)), env, home, uid, gid)
+/* The same for the user running the tests. */
+#define PROMPT_ENV(env, ...) PROMPT_AS(getuid(), getgid(), env, __VA_ARGS__)
 /* The same with a PATH of the system's directories only, which only root can change. */
 #define PROMPT(...) PROMPT_ENV(systemPath, __VA_ARGS__)
 
@@ -195,7 +215,7 @@ int main(int argc, char **argv) {
             @"sudo cat '/etc/hosts\\u{FE0F}' '\\u{3164}' 'a\\u{34F}b' '\\u{2800}'");
         expect(@"argv[0] chosen by the caller is not shown", PROMPT("echo", "rm", "-rf", "/"),
             @"sudo rm -rf /");
-        expect(@"no arguments at all", tid_look_build_prompt(0, (char *[]){NULL}, systemPath, home), @"sudo");
+        expect(@"no arguments at all", tid_look_build_prompt(0, (char *[]){NULL}, systemPath, home, getuid(), getgid()), @"sudo");
 
         /* Look-alike letters (see mark_lookalikes in pam_tid_look.m). */
         expect(@"a Cyrillic letter among Latin ones is spelled out", PROMPT("sudo", "/usr/bin/\xD1\x96" "d"),
@@ -233,7 +253,7 @@ int main(int argc, char **argv) {
         char **cut = exec_layout(3, ARGV("sudo", "--preserve-env=TERM,,BASH_ENV", "bash"));
         char *last = NULL;
         for (char *t = strtok_r(cut[1] + strlen("--preserve-env="), ",", &last); t; t = strtok_r(NULL, ",", &last)) {}
-        expect(@"arguments cut in place by sudo are shown whole", tid_look_build_prompt(3, cut, systemPath, home),
+        expect(@"arguments cut in place by sudo are shown whole", tid_look_build_prompt(3, cut, systemPath, home, getuid(), getgid()),
             @"sudo --preserve-env=TERM,,BASH_ENV bash");
 
         char longArg[2001];
@@ -387,7 +407,7 @@ int main(int argc, char **argv) {
                 [words addObject:@(noHint[t][k])];
             }
             expect_hint([@"no hint for " stringByAppendingString:[words componentsJoinedByString:@" "]],
-                tid_look_build_prompt(n, exec_layout(n, args), evilFirst, home), @"(none)");
+                tid_look_build_prompt(n, exec_layout(n, args), evilFirst, home, getuid(), getgid()), @"(none)");
         }
         const char *program = getprogname();
         setprogname("sudoedit");
@@ -399,7 +419,7 @@ int main(int argc, char **argv) {
             PROMPT_ENV(ARGV(keep([@"PATH=" stringByAppendingString:lookalikeDir])), "sudo", "id"),
             [NSString stringWithFormat:@"%@/b\\u{456}n/id | %@", scratch, changeable]);
         expect_hint(@"the user's home is written as ~",
-            tid_look_build_prompt(2, exec_layout(2, ARGV("sudo", "id")), evilOnly, scratch.fileSystemRepresentation),
+            tid_look_build_prompt(2, exec_layout(2, ARGV("sudo", "id")), evilOnly, scratch.fileSystemRepresentation, getuid(), getgid()),
             [NSString stringWithFormat:@"~/evil/id | %@", changeable]);
         NSString *longHint = hint_of(PROMPT_ENV(ARGV(keep([@"PATH=" stringByAppendingString:longDir])), "sudo", "id"));
         check([longHint containsString:@"CHARACTERS NOT SHOWN"] && [longHint containsString:@"ddd/id | "] && longHint.length < 260,
@@ -409,6 +429,66 @@ int main(int argc, char **argv) {
             [warned[6] isEqualToString:@""] && [warned[7] isEqualToString:@"Directory:"],
             @"the warning has a line of its own, before the blank line", [warned componentsJoinedByString:@" | "]);
         [fm removeItemAtPath:scratch error:NULL];
+
+        /*
+         * The hint shows nothing the account could not see: sudo shows the
+         * prompt before it authenticates anyone. These run for an account
+         * other than the one running the tests, nobody, so that the module's
+         * search (as this user here, as root in sudo) can see what nobody
+         * cannot. They are made under /private/tmp, which anyone can search,
+         * and not in NSTemporaryDirectory(), which only this user can.
+         */
+        uid_t other = (uid_t)-2;
+        gid_t otherGroup = (gid_t)-2;
+        char shared[] = "/private/tmp/tid_look_test.XXXXXX";
+        BOOL sharedMade = mkdtemp(shared) && chmod(shared, 0755) == 0;
+        NSString *sharedDir = @(shared);
+        NSString *openDir = [sharedDir stringByAppendingPathComponent:@"open"];
+        NSString *closedDir = [sharedDir stringByAppendingPathComponent:@"closed"];
+        NSString *groupClosedDir = [sharedDir stringByAppendingPathComponent:@"group-closed"];
+        NSString *deniedDir = [sharedDir stringByAppendingPathComponent:@"denied"];
+        for (NSString *dir in @[openDir, closedDir, groupClosedDir, deniedDir]) {
+            sharedMade = sharedMade && [fm createDirectoryAtPath:dir withIntermediateDirectories:NO
+                attributes:@{NSFilePosixPermissions: @0755} error:NULL];
+        }
+        sharedMade = sharedMade &&
+            make_command([openDir stringByAppendingPathComponent:@"id"], 0755) &&
+            make_command([closedDir stringByAppendingPathComponent:@"id"], 0755) &&
+            make_command([groupClosedDir stringByAppendingPathComponent:@"id"], 0755) &&
+            make_command([deniedDir stringByAppendingPathComponent:@"id"], 0755) &&
+            [fm createSymbolicLinkAtPath:[openDir stringByAppendingPathComponent:@"linked"]
+                     withDestinationPath:[closedDir stringByAppendingPathComponent:@"id"] error:NULL] &&
+            chmod(closedDir.fileSystemRepresentation, 0700) == 0 &&
+            chown(groupClosedDir.fileSystemRepresentation, (uid_t)-1, getgid()) == 0 &&
+            chmod(groupClosedDir.fileSystemRepresentation, 0705) == 0 &&
+            deny_search_to_nobody(deniedDir);
+        check(sharedMade, @"scratch commands for the tests as another account", sharedDir);
+        char **openFirst = ARGV(keep([NSString stringWithFormat:@"PATH=%@:/usr/bin", openDir]));
+        char **closedFirst = ARGV(keep([NSString stringWithFormat:@"PATH=%@:/usr/bin", closedDir]));
+        expect_hint(@"another account sees a folder anyone can search", PROMPT_AS(other, otherGroup, openFirst, "sudo", "id"),
+            [NSString stringWithFormat:@"%@/id | %@", openDir, changeable]);
+        expect_hint(@"this user sees its own closed folder", PROMPT_ENV(closedFirst, "sudo", "id"),
+            [NSString stringWithFormat:@"%@/id | %@", closedDir, changeable]);
+        expect_hint(@"a folder the account cannot search, with the command: no hint",
+            PROMPT_AS(other, otherGroup, closedFirst, "sudo", "id"), @"(none)");
+        expect_hint(@"a folder the account cannot search, without the command: no hint either",
+            PROMPT_AS(other, otherGroup, closedFirst, "sudo", "true"), @"(none)");
+        expect_hint(@"the group's bits apply to the group, though the others' allow searching",
+            PROMPT_AS(other, getgid(), ARGV(keep([NSString stringWithFormat:@"PATH=%@:/usr/bin", groupClosedDir])), "sudo", "id"),
+            @"(none)");
+        expect_hint(@"a group that is not the account's primary one may be a supplementary one: its bits apply too",
+            PROMPT_AS(other, otherGroup, ARGV(keep([NSString stringWithFormat:@"PATH=%@:/usr/bin", groupClosedDir])), "sudo", "id"),
+            @"(none)");
+        expect_hint(@"a symbolic link into a folder the account cannot search: no hint",
+            PROMPT_AS(other, otherGroup, ARGV(keep([@"PATH=" stringByAppendingString:openDir])), "sudo", "linked"), @"(none)");
+        expect_hint(@"an ACL entry that denies searching: no hint",
+            PROMPT_AS(other, otherGroup, ARGV(keep([NSString stringWithFormat:@"PATH=%@:/usr/bin", deniedDir])), "sudo", "id"),
+            @"(none)");
+        expect_hint(@"a missing folder before the match, for another account",
+            PROMPT_AS(other, otherGroup, ARGV(keep([NSString stringWithFormat:@"PATH=%@/missing:/usr/bin", sharedDir])), "sudo", "id"),
+            @"/usr/bin/id");
+        chmod(closedDir.fileSystemRepresentation, 0755);
+        [fm removeItemAtPath:sharedDir error:NULL];
 
         /* The environment as exec passed it, read back by the module. */
         char **twoPaths = ARGV("PATH=/usr/bin", "A=1", "PATH=", "PATH=/tmp/x");
