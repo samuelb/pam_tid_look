@@ -321,20 +321,15 @@ static NSString *working_directory(const char *home) {
  */
 
 /*
- * sudo's short options, from parse_args() in sudo 1.9.17p2 as Apple ships it.
- * A letter followed by ':' takes a value, by "::" an optional one.
- */
-static const char kSudoOptions[] = "Aa:BbC:c:D:Eeg:Hh::iKklNnPp:R:r:SsT:t:U:u:Vv";
-
-/*
  * The options after which sudo still runs, as root, the file its PATH search
- * found. Every other one leaves the hint out: -s and -i (a shell finds the
- * command), -e (sudoedit), -l, -v, -K, -V and -h (nothing runs), -D and -R
- * (another directory or root), -g and -U (another user), and -a, -c, -r and
- * -t (BSD authentication, login classes and SELinux, not used on macOS).
- * -u stays only with root.
+ * found, from parse_args() in sudo 1.9.17p2 as Apple ships it. A letter
+ * followed by ':' takes a value. Every other option leaves the hint out: -s
+ * and -i (a shell finds the command), -e (sudoedit), -l, -v, -K, -V and -h
+ * (nothing runs), -D and -R (another directory or root), -g and -U (another
+ * user), and -a, -c, -r and -t (BSD authentication, login classes and
+ * SELinux, not used on macOS). -u stays only with root.
  */
-static const char kHintOptions[] = "ABbCEHkNnPpSTu";
+static const char kHintOptions[] = "ABbC:EHkNnPp:ST:u:";
 
 /* Whether sudo's -u value is root: the name, or "#" and a uid of zeros. */
 static BOOL names_root(const char *user) {
@@ -370,8 +365,8 @@ static int command_index(int argc, char **argv) {
         if (word[0] == '-' && word[1]) {
             i++;
             for (const char *c = word + 1; *c; c++) {
-                const char *spec = *c == ':' ? NULL : strchr(kSudoOptions, *c);
-                if (!spec || !strchr(kHintOptions, *c)) return -1;
+                const char *spec = *c == ':' ? NULL : strchr(kHintOptions, *c);
+                if (!spec) return -1;
                 if (spec[1] != ':') continue;
                 const char *value = c[1] ? c + 1 : i < argc ? argv[i++] : NULL;
                 if (!value) return -1;
