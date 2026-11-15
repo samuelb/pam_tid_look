@@ -647,7 +647,7 @@ do_install() {
     for name in $FILES; do
         mv -f "$staged/$name" "$DEST_DIR/$name"
     done
-    write_conf with_tid_look "$MODULE"
+    write_conf cat "$staged/sudo_local.new"
     PROBE_BIN=$PROBE
 
     say "Checking that PAM can load sudo's config."

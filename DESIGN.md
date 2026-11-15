@@ -613,7 +613,8 @@ refuses when it reaches the question. Either way nothing has been changed.
 
 What is written is what was shown. Install copies `sudo_local` before check 4,
 and uninstall before it builds the new file. If `sudo_local` no longer matches
-that copy after the answer, the run stops without changing anything.
+that copy after the answer, the run stops without changing anything. Both then
+write the very file whose diff was shown, rather than building it again.
 
 `rescue` never asks. It runs as root from an administrator dialog, which has no
 terminal, and it is for when sudo is already broken. `--yes` is refused with

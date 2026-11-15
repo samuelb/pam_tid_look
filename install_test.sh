@@ -132,7 +132,7 @@ if [ -n "${FAKE_BREAK_AFTER:-}" ]; then
     eval "real_$(declare -f write_conf)"
     write_conf() {
         real_write_conf "$@" || return 1
-        [ "$1" != with_tid_look ] || { chmod u+w "$MODULE"; echo BROKEN >>"$MODULE"; }
+        ! grep -qF "$MODULE" "$CONF" || { chmod u+w "$MODULE"; echo BROKEN >>"$MODULE"; }
     }
 fi
 EOF
