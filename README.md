@@ -5,20 +5,10 @@
 Touch ID for `sudo` on macOS, like Apple's `pam_tid.so`, with one difference:
 the dialog shows what you are approving.
 
-```
-Command:
-sudo brew services restart nginx
-
-Found in PATH:
-/opt/homebrew/bin/brew
-Can be changed without root.
-
-Directory:
-~/code/myproject
-
-Requested by:
-zsh ← Terminal
-```
+<p align="center">
+  <img src="docs/sudo-dialog.png" width="372"
+    alt="The Touch ID dialog for sudo. It shows the command Homebrew runs to install a cask's package, sudo -u root -E LOGNAME=… USER=… USERNAME=… -- /usr/sbin/installer -pkg /opt/homebrew/Caskroom/zoom/7.2.5.90525/zoomusInstallerFull.pkg -target /; the directory; and the processes that asked.">
+</p>
 
 Authentication is left to Apple, exactly as `pam_tid.so` does it. The module
 only adds the text. Why it is built this way is in [DESIGN.md](DESIGN.md).

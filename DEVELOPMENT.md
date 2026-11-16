@@ -9,7 +9,7 @@ made. Why the module is built the way it is is in [DESIGN.md](DESIGN.md).
 | ----------- | -------------------------------------------------- |
 | `src/`      | the module, the installer and the probe            |
 | `test/`     | the tests                                          |
-| `scripts/`  | the script that renders the formula for a release  |
+| `scripts/`  | the scripts that render the formula and take the README's screenshot |
 | `Formula/`  | the Homebrew formula                               |
 | `build/`    | what `make` builds                                 |
 
@@ -34,6 +34,36 @@ the built module, and runs two shell tests:
 - `test/install_test.sh` exercises install, uninstall and each rollback
   against a scratch directory.
 - `test/render_formula_test.sh` tests the formula script.
+
+## Screenshot
+
+`docs/sudo-dialog.png`, the dialog in the README, is taken by
+`scripts/screenshot.sh`. With the module installed, run it from a terminal:
+
+```
+scripts/screenshot.sh                         # what `brew install --cask zoom` asks sudo, here
+scripts/screenshot.sh -C ~ -- nmap -sS -p 22 localhost   # another command and directory
+scripts/screenshot.sh -o /tmp/dark.png        # somewhere else
+```
+
+By default it shows the dialog that `brew install --cask zoom` raises:
+Homebrew runs the cask's package with `sudo -u root -E LOGNAME=… USER=…
+USERNAME=… -- /usr/sbin/installer -pkg … -target /`. The package is not there,
+so approving it by mistake installs nothing; the script checks that first.
+
+It runs `sudo -K`, then sudo with the command in the directory, waits for
+the dialog, saves that window, and withdraws the dialog by killing sudo. Do
+not answer the dialog: approving it runs the command as root. At the end it
+prints the dialog's width in points, for the `width` of the README's `<img>`.
+
+- The terminal app needs the Screen Recording permission (System Settings >
+  Privacy & Security). Without it the script stops before it runs sudo.
+- The dialog's "Requested by" names the processes that led to sudo, starting
+  with the script's bash, so run it from the terminal directly, not from
+  `make` or another script.
+- The dialog follows the system's appearance. Switch between light and dark
+  to take both.
+- `sudo -K` also ends the sudo session of other terminals.
 
 ## CI
 

@@ -63,7 +63,7 @@ sanitize: $(B)/prompt_test_sanitized
 	$(SANITIZE_ENV) ./$(B)/prompt_test_sanitized
 
 lint:
-	shellcheck -s bash src/pam_tid_look.sh test/install_test.sh scripts/render_formula.sh test/render_formula_test.sh
+	shellcheck -s bash src/pam_tid_look.sh test/install_test.sh scripts/render_formula.sh scripts/screenshot.sh test/render_formula_test.sh
 
 # Raises real authorization dialogs for a moment. See test/dialog_check.m.
 $(B)/dialog_check: test/dialog_check.m src/pam_tid_look.m
