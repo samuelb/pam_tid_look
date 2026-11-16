@@ -101,10 +101,11 @@ sudo was seen to ask for the password on the terminal.
 
 ### Timeout
 
-If nobody answers the dialog within the timeout, 30 seconds by default, the
-module closes it and sudo asks for the password on the terminal, as it does
-after Cancel. Without this, a sudo started while you are away, or by a program
-that waits for it, hangs on the dialog until someone answers it.
+If a timeout is set and nobody answers the dialog within it, the module
+closes the dialog and sudo asks for the password on the terminal, as it does
+after Cancel. Without one, a sudo started while you are away, or by a program
+that waits for it, hangs on the dialog until someone answers it. The default
+is 0, no timeout: the dialog waits for an answer, as Apple's does.
 
 The module sends the request with `AuthorizationCopyRightsAsync` and waits for
 the answer. When the timeout runs out, it calls `AuthorizationDismiss()`.
@@ -154,8 +155,7 @@ auth       sufficient     /Library/Security/pam_tid_look/pam_tid_look.so timeout
 
 `timeout=SECONDS` is how long the dialog waits for an answer, a whole number
 from 0 to 3600 written with at most four digits. 0 means no limit. Without the
-option, the timeout is 30 seconds. An invalid value is logged and the default
-is used: the timeout only decides how soon sudo falls back to the password,
+option, the timeout is 0. An invalid value is logged and the default is used: the timeout only decides how soon sudo falls back to the password,
 not whether anyone gets in, so a typo should not disable Touch ID. Unknown
 options are logged and ignored. The right name cannot be changed from the PAM
 config.
@@ -564,8 +564,10 @@ after it.
 
 `--timeout SECONDS` puts `timeout=SECONDS` on the new line, checked by the same
 rule as the module's. Without it, a reinstall keeps the `timeout=` value of the
-current line, and stops if that value is invalid; a first install writes no
-option, so the module's default applies. Uninstalling removes the new line and
+current line, and stops if that value is invalid; a first install, or a
+reinstall over a line without the option, writes `timeout=0`, the module's
+default. The option is always written, so the setting can be seen and changed
+in `sudo_local`. Uninstalling removes the new line and
 strips that prefix, which restores the file exactly. Leaving both modules
 active was rejected because cancelling the first dialog would raise a second
 one.
@@ -1118,8 +1120,9 @@ Checked on 2026-11-13, without root.
   (dotless `ı`, `ɑ`), and punctuation and symbols such as the division slash
   `∕`.
 - **No way out from the terminal.** While the dialog is open, Ctrl-C in the
-  terminal does nothing. The dialog has to be answered or left to time out, or
-  sudo killed with SIGKILL from elsewhere. This is sudo's behaviour (see
+  terminal does nothing. The dialog has to be answered or left to time out
+  (only with a timeout set; the default is none), or sudo killed with SIGKILL
+  from elsewhere. This is sudo's behaviour (see
   Verification).
 - **The timeout does not wait for typing.** It counts from the request, so it
   also closes the dialog while a password is being typed into it.

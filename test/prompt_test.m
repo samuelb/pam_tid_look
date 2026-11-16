@@ -532,7 +532,7 @@ int main(int argc, char **argv) {
         check(!tid_look_policy_uses_path(noConf, noConf), @"no sudoers: no hint", @(noConf));
         [fm removeItemAtPath:policy error:NULL];
 
-        expect_timeout(@"no options: default timeout", 30, 0, (const char *[]){NULL});
+        expect_timeout(@"no options: no timeout", 0, 0, (const char *[]){NULL});
         expect_timeout(@"timeout=5", 5, 1, (const char *[]){"timeout=5"});
         expect_timeout(@"timeout=0 turns it off", 0, 1, (const char *[]){"timeout=0"});
         expect_timeout(@"timeout=3600 is the maximum", 3600, 1, (const char *[]){"timeout=3600"});
@@ -541,7 +541,10 @@ int main(int argc, char **argv) {
         const char *invalid[] = {"timeout=3601", "timeout=", "timeout=-1", "timeout=+5", "timeout=5s",
             "timeout=1.5", "timeout=00005", "timeout=99999999999999999999", "Timeout=5", "timeout"};
         for (size_t i = 0; i < sizeof invalid / sizeof *invalid; i++) {
-            expect_timeout([NSString stringWithFormat:@"%s keeps the default", invalid[i]], 30, 1, &invalid[i]);
+            expect_timeout([NSString stringWithFormat:@"%s keeps the default", invalid[i]], 0, 1, &invalid[i]);
+            /* The default is 0, which a misread value could also give. */
+            const char *after[] = {"timeout=9", invalid[i]};
+            expect_timeout([NSString stringWithFormat:@"%s keeps the value before it", invalid[i]], 9, 2, after);
         }
 
         printf("\nFull prompt for a plain command:\n---\n%s---\n",

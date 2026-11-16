@@ -24,8 +24,8 @@
 #
 # --timeout sets how long the Touch ID dialog waits for a fingerprint before
 # it closes and sudo asks for the password: 0 to 3600 seconds, 0 for no limit.
-# Without it, a reinstall keeps the current setting and a first install
-# leaves the module's default.
+# Without it, a reinstall keeps the current setting and a first install uses
+# the default, 0. Either way the value is written to the module's line.
 #
 # uninstall puts pam_tid.so back and removes the module. If sudo starts now
 # but would not start without the module, it changes nothing. If sudo does not
@@ -75,7 +75,7 @@ TID_LOOK_RE='(^|/)pam_tid_look[.]so$'
 # Fields are always tested through f, never through $1..$NF.
 # shellcheck disable=SC2016 # awk code
 FIELDS='{ line = $0; sub(/#.*/, "", line); n = split(line, f) }'
-DEFAULT_TIMEOUT=30 # kDefaultTimeout in pam_tid_look.m
+DEFAULT_TIMEOUT=0  # kDefaultTimeout in pam_tid_look.m
 TOUCHID_WAIT=120   # seconds install waits for the Touch ID dialog to be answered
 
 # This script with symlinks resolved, and its directory. The files to install
@@ -575,7 +575,8 @@ do_install() {
         fi
         [ -z "$timeout" ] || timeout=$((10#$timeout))
     fi
-    options=${timeout:+ timeout=$timeout}
+    timeout=${timeout:-$DEFAULT_TIMEOUT}
+    options=" timeout=$timeout"
 
     # Without a working sudo now, a check after the change would mean nothing.
     sudo_starts || die "sudo does not start as things are now, so nothing was changed." "$sudo_error"
@@ -676,10 +677,10 @@ do_install() {
     keep_backup
 
     local closes
-    if [ "${timeout:-$DEFAULT_TIMEOUT}" = 0 ]; then
+    if [ "$timeout" = 0 ]; then
         closes="The dialog stays open until you answer it (timeout=0)."
     else
-        closes="Left alone, the dialog closes after ${timeout:-$DEFAULT_TIMEOUT} seconds and sudo asks for the password."
+        closes="Left alone, the dialog closes after $timeout seconds and sudo asks for the password."
     fi
     say "" "Installed. $CONF now reads:" ""
     sed 's/^/    /' "$CONF"

@@ -90,7 +90,9 @@ changes nothing.
 
 `--timeout SECONDS` sets how long the dialog waits for a fingerprint before it
 closes and sudo asks for the password: 0 to 3600, where 0 means no limit. The
-default is 30. A reinstall keeps the current value.
+default is 0. A reinstall keeps the current value. Install always writes the
+value on the module's line in `sudo_local`, as `timeout=SECONDS`, so it can be
+changed there.
 
 The `sudo_local` that install replaces is kept in `/etc/pam.d` (see
 [Backups](#backups)).

@@ -71,7 +71,7 @@ enum {
 };
 
 enum {
-    kDefaultTimeout = 30, /* seconds the dialog waits for an answer */
+    kDefaultTimeout = 0,  /* seconds the dialog waits for an answer; 0: no limit */
     kMaxTimeout = 3600,
     kDismissRetry = 1,    /* seconds between dismissals while the request is still pending */
 };

@@ -142,7 +142,7 @@ HEAD='# sudo_local: local config file which survives system update and is includ
 APPLE="$HEAD
 auth       sufficient     pam_tid.so"
 INSTALLED="$HEAD
-auth       sufficient     $W/Security/pam_tid_look/pam_tid_look.so
+auth       sufficient     $W/Security/pam_tid_look/pam_tid_look.so timeout=0
 #pam_tid_look# auth       sufficient     pam_tid.so"
 
 # A fresh world: a build directory with module v1, and Apple's sudo_local.
@@ -258,6 +258,20 @@ run uninstall
 check "uninstall succeeds" [ "$status" = 0 ]
 check "sudo_local is Apple's again, byte for byte" conf_is "$APPLE"
 check "the module directory is gone" gone
+
+echo "== install writes the timeout on the module's line"
+setup
+run install
+check "a first install writes timeout=0" conf_is "$INSTALLED"
+check "  and says the dialog stays open" said "The dialog stays open until you answer it (timeout=0)."
+set_conf "$(sed 's| timeout=0$||' "$W/pam.d/sudo_local")"
+run install
+check "a reinstall over a line without timeout= writes timeout=0" conf_is "$INSTALLED"
+run install --timeout 45
+check "--timeout 45 writes timeout=45" grep -q "pam_tid_look.so timeout=45$" "$W/pam.d/sudo_local"
+check "  and says when the dialog closes" said "the dialog closes after 45 seconds"
+run install --timeout 0
+check "--timeout 0 writes timeout=0" conf_is "$INSTALLED"
 
 echo "== install is undone when Touch ID is not approved"
 setup
@@ -480,7 +494,7 @@ run uninstall
 check "uninstall puts it back byte for byte" conf_is "$commented"
 setup
 run install
-set_conf "$(sed 's|pam_tid_look[.]so$|pam_tid_look.so#local|' "$W/pam.d/sudo_local")"
+set_conf "$(sed 's|pam_tid_look[.]so timeout=0$|pam_tid_look.so#local|' "$W/pam.d/sudo_local")"
 run uninstall
 check "uninstall removes pam_tid_look.so#…" conf_is "$APPLE"
 check "  before it removes the module" gone
@@ -861,7 +875,7 @@ check "  and says so" said "does not use pam_tid_look"
 setup
 rm "$W/pam.d/sudo_local"
 run install
-check "install without a sudo_local adds the line" grep -q "^auth       sufficient     .*pam_tid_look.so$" "$W/pam.d/sudo_local"
+check "install without a sudo_local adds the line" grep -q "^auth       sufficient     .*pam_tid_look.so timeout=0$" "$W/pam.d/sudo_local"
 run uninstall
 check "  and uninstall takes it out" sh -c "! grep -q pam_tid_look '$W/pam.d/sudo_local'"
 setup
