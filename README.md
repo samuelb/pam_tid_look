@@ -34,11 +34,14 @@ With Homebrew:
 
 ```
 brew install samuelb/tap/pam_tid_look
-sudo "$(brew --prefix)/bin/pam_tid_look" install
+sudo pam_tid_look install
 ```
 
 Homebrew may first ask you to trust the tap (`brew trust`). `brew install` only
 puts the files in Homebrew's prefix. The second command is what changes sudo.
+If sudo says it cannot find `pam_tid_look`, Homebrew's `bin` is not in the
+`PATH` sudo searches: use `sudo "$(brew --prefix)/bin/pam_tid_look"` instead,
+here and below.
 
 To build and install it from the source instead, see
 [DEVELOPMENT.md](DEVELOPMENT.md#build-and-install-from-the-source).
@@ -95,7 +98,7 @@ pam_tid_look status
 
 ```
 brew upgrade pam_tid_look
-sudo "$(brew --prefix)/bin/pam_tid_look" install
+sudo pam_tid_look install
 ```
 
 `brew upgrade` only replaces the files in Homebrew's prefix. Until install runs
@@ -104,7 +107,7 @@ again, sudo keeps the module it has.
 ## Uninstall
 
 ```
-sudo "$(brew --prefix)/bin/pam_tid_look" uninstall
+sudo pam_tid_look uninstall
 brew uninstall pam_tid_look
 ```
 
@@ -137,7 +140,7 @@ In Terminal, without sudo:
 /Library/Security/pam_tid_look/pam_tid_look rescue
 ```
 
-`pam_tid_look rescue` from Homebrew does the same.
+`pam_tid_look rescue`, Homebrew's copy, does the same.
 
 It asks for an administrator password in a macOS dialog, which does not go
 through sudo, and replaces the module with Apple's own `pam_tid.so`. sudo then
