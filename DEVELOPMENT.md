@@ -1,7 +1,8 @@
 # Development
 
-How the source is laid out, how to build and test it, and how a release is
-made. Why the module is built the way it is is in [DESIGN.md](DESIGN.md).
+How the source is laid out, how to build, install and test it, and how a
+release is made. Why the module is built the way it is is in
+[DESIGN.md](DESIGN.md).
 
 ## Layout
 
@@ -13,9 +14,58 @@ made. Why the module is built the way it is is in [DESIGN.md](DESIGN.md).
 | `Formula/`  | the Homebrew formula                               |
 | `build/`    | what `make` builds                                 |
 
+## Build and install from the source
+
+### Build
+
+```
+make
+```
+
 `make` builds `pam_tid_look`, `pam_tid_look.so` and `pam_tid_look_probe` into
 `build/`, side by side, the same way Homebrew's copy and the installed copy
 lay them out.
+
+### Install
+
+```
+sudo build/pam_tid_look install
+```
+
+This is the same install as Homebrew's: it copies the build to
+`/Library/Security/pam_tid_look` and changes `sudo_local`, with the same
+checks, confirmation and options. The README describes them under
+[What install does](README.md#what-install-does) and
+[Options](README.md#options). The other commands, `status` and `rescue`, work
+from `build/` too.
+
+The first time, macOS asks whether your terminal app may administer the
+computer. Allow it: only then may root change `/etc/pam.d`.
+
+### Update
+
+```
+git pull
+make
+sudo build/pam_tid_look install
+```
+
+Until install runs again, sudo keeps the module it has.
+
+### Uninstall
+
+```
+sudo build/pam_tid_look uninstall
+```
+
+If `build/` is already gone, the installed copy does the same:
+
+```
+sudo /Library/Security/pam_tid_look/pam_tid_look uninstall
+```
+
+What uninstall does is described under [Uninstall](README.md#uninstall) in
+the README.
 
 ## Tests
 

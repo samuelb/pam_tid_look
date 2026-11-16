@@ -40,12 +40,8 @@ sudo "$(brew --prefix)/bin/pam_tid_look" install
 Homebrew may first ask you to trust the tap (`brew trust`). `brew install` only
 puts the files in Homebrew's prefix. The second command is what changes sudo.
 
-From the source:
-
-```
-make
-sudo build/pam_tid_look install
-```
+To build and install it from the source instead, see
+[DEVELOPMENT.md](DEVELOPMENT.md#build-and-install-from-the-source).
 
 The first time, macOS asks whether your terminal app may administer the
 computer. Allow it: only then may root change `/etc/pam.d`.
@@ -97,8 +93,13 @@ pam_tid_look status
 
 ## Update
 
-After `brew upgrade pam_tid_look`, or `git pull` and `make`, run install again.
-Until then, sudo keeps the module it has.
+```
+brew upgrade pam_tid_look
+sudo "$(brew --prefix)/bin/pam_tid_look" install
+```
+
+`brew upgrade` only replaces the files in Homebrew's prefix. Until install runs
+again, sudo keeps the module it has.
 
 ## Uninstall
 
@@ -107,9 +108,11 @@ sudo "$(brew --prefix)/bin/pam_tid_look" uninstall
 brew uninstall pam_tid_look
 ```
 
-From the source, run `sudo build/pam_tid_look uninstall`. If Homebrew's copy is
-already gone, `sudo /Library/Security/pam_tid_look/pam_tid_look uninstall`
-does the same.
+If Homebrew's copy is already gone, the installed copy does the same:
+
+```
+sudo /Library/Security/pam_tid_look/pam_tid_look uninstall
+```
 
 `uninstall` shows the change to `sudo_local` and asks before it makes it, the
 same way install does, `--yes` included. Then it puts the `pam_tid.so` line
@@ -134,8 +137,7 @@ In Terminal, without sudo:
 /Library/Security/pam_tid_look/pam_tid_look rescue
 ```
 
-`pam_tid_look rescue` from Homebrew, or `build/pam_tid_look rescue` from the
-source, does the same.
+`pam_tid_look rescue` from Homebrew does the same.
 
 It asks for an administrator password in a macOS dialog, which does not go
 through sudo, and replaces the module with Apple's own `pam_tid.so`. sudo then
@@ -246,8 +248,8 @@ to as well; that has not been tested.
 
 ## Development
 
-Building, testing and releasing are described in
-[DEVELOPMENT.md](DEVELOPMENT.md).
+Building and installing from the source, testing and releasing are described
+in [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 
